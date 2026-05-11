@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "PFM-MEFMRI"
+message: "If you use this software, please cite the associated paper and archived software release."
+authors:
+  - family-names: "Lynch"
+    given-names: "Charles J."
+    affiliation: "Weill Cornell Medicine"
+license: MIT
+version: 0.1.0
+date-released: 2026-05-11
+repository-code: "https://github.com/cjl2007/pfm-mefmri"
+url: "https://github.com/cjl2007/pfm-mefmri"
+preferred-citation:
+  type: article
+  title: "Rapid Precision Functional Mapping of Individuals Using Multi-Echo fMRI"
+  authors:
+    - family-names: "Lynch"
+      given-names: "Charles J."
+    - family-names: "Power"
+      given-names: "Jonathan D."
+    - family-names: "Scult"
+      given-names: "Michael A."
+    - family-names: "Dubin"
+      given-names: "Marc"
+    - family-names: "Gunning"
+      given-names: "Faith M."
+    - family-names: "Liston"
+      given-names: "Conor"
+  journal: "Cell Reports"
+  year: 2020
+  doi: "10.1016/j.celrep.2020.108540"
