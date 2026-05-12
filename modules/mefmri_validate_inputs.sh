@@ -11,11 +11,16 @@ FuncDirName="${2:-${FUNC_DIRNAME:-rest}}"
 FuncFilePrefix="${3:-${FUNC_FILE_PREFIX:-Rest}}"
 StartSession="${4:-${START_SESSION:-1}}"
 VALIDATE_ECHO_DIM4_POLICY="${VALIDATE_ECHO_DIM4_POLICY:-error}"
+FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
 
 [[ -d "$SubjectDir" ]] || { echo "ERROR: missing subject directory: $SubjectDir" >&2; exit 2; }
 [[ "$StartSession" =~ ^[0-9]+$ ]] || { echo "ERROR: StartSession must be integer, got: $StartSession" >&2; exit 2; }
 [[ "$VALIDATE_ECHO_DIM4_POLICY" == "error" || "$VALIDATE_ECHO_DIM4_POLICY" == "warn" ]] || {
   echo "ERROR: VALIDATE_ECHO_DIM4_POLICY must be error|warn, got: $VALIDATE_ECHO_DIM4_POLICY" >&2
+  exit 2
+}
+[[ "$FUNC_NOFIELDMAP_MODE" == "0" || "$FUNC_NOFIELDMAP_MODE" == "1" ]] || {
+  echo "ERROR: FUNC_NOFIELDMAP_MODE must be 0|1, got: $FUNC_NOFIELDMAP_MODE" >&2
   exit 2
 }
 
@@ -169,7 +174,7 @@ validate_run_payload() {
     fi
   fi
 
-  python3 - "$run_dir" "$FuncFilePrefix" <<'PY'
+  "${VALIDATE_PYTHON:-${PIPELINE_PYTHON:-python3}}" - "$run_dir" "$FuncFilePrefix" <<'PY'
 import json
 import re
 import sys
@@ -241,6 +246,15 @@ check_fieldmaps() {
   local -a ap_files=() pa_files=()
   local ap pa expected_json
 
+  if [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]]; then
+    if [[ -d "$FM_UNPROC" ]]; then
+      warn "FUNC_NOFIELDMAP_MODE=1: fieldmap directory will be ignored: $FM_UNPROC"
+    else
+      warn "FUNC_NOFIELDMAP_MODE=1: skipping fieldmap presence checks."
+    fi
+    return
+  fi
+
   [[ -d "$FM_UNPROC" ]] || { err "Missing fieldmap raw directory: $FM_UNPROC"; return; }
 
   mapfile -t ap_files < <(find "$FM_UNPROC" -maxdepth 1 -type f -name 'AP_S*_R*.nii.gz' | sort -V)
@@ -265,6 +279,7 @@ echo "[validate] SubjectDir: $SubjectDir"
 echo "[validate] Functional naming: func/$FuncDirName, prefix ${FuncFilePrefix}_*"
 echo "[validate] StartSession: $StartSession"
 echo "[validate] Echo dim4 policy: $VALIDATE_ECHO_DIM4_POLICY"
+echo "[validate] FUNC_NOFIELDMAP_MODE: $FUNC_NOFIELDMAP_MODE"
 
 check_anat
 check_func

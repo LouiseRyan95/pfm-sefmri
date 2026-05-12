@@ -10,8 +10,9 @@ HCPPIPEDIR_DEFAULT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 export HCPPIPEDIR="${HCPPIPEDIR_DEFAULT}"
 
 ## Set up other environment variables
-export MSM="/usr/local/msm_ubuntu_v3"
-export MSMBINDIR="/usr/local/msm_ubuntu_v3"
+export MSM="${MSM:-/usr/local/msm_ubuntu_v3}"
+export MSMBINDIR="${MSMBINDIR:-/usr/local/msm_ubuntu_v3}"
+# NOTE: MSMBINDIR should point to the directory containing the 'msm' binary (or to the msm binary itself).
 export MATLAB_COMPILER_RUNTIME=/export/matlab/MCR/R2017b/v93
 export FSL_FIXDIR=/usr/local/fix
 # if a suitable version of wb_command is on your $PATH, CARET7DIR can be blank

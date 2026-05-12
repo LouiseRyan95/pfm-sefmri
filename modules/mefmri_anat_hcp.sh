@@ -36,6 +36,40 @@ if [ ! -f "$EnvironmentScript" ]; then
 fi
 source "$EnvironmentScript"
 
+resolve_msm_cmd() {
+  if [[ -n "${MSMBINDIR:-}" ]]; then
+    if [[ -x "${MSMBINDIR}" && ! -d "${MSMBINDIR}" ]]; then
+      echo "${MSMBINDIR}"
+      return 0
+    fi
+    echo "${MSMBINDIR}/msm"
+    return 0
+  fi
+
+  command -v msm 2>/dev/null || true
+}
+
+check_msm_regoption_support() {
+  local msm_cmd
+  msm_cmd="$(resolve_msm_cmd)"
+
+  if [[ -z "${msm_cmd}" || ! -x "${msm_cmd}" ]]; then
+    echo "ERROR: PostFreeSurfer RegName=MSMSulc requires MSM (Multimodal Surface Matching), but no executable MSM was found." >&2
+    echo "       Set MSMBINDIR to the directory containing 'msm' (or to the msm binary itself), or set HCP_REGNAME=FS to skip MSMSulc." >&2
+    echo "       Tried MSMBINDIR='${MSMBINDIR:-}' and PATH lookup for 'msm'." >&2
+    return 2
+  fi
+
+  local probe_out
+  probe_out="$("${msm_cmd}" --regoption=3 2>&1 || true)"
+  if echo "${probe_out}" | grep -Eqi "(unrecognized|unknown|illegal)[^\\n]*regoption|regoption[^\\n]*(unrecognized|unknown|illegal)|does not support[^\\n]*regoption"; then
+    echo "ERROR: The MSM binary found (${msm_cmd}) does not support '--regoption', which is required for MSMSulc." >&2
+    echo "       Install an HCP-compatible MSM build (often distributed as msm_ubuntu_v3 / MSM_HOCR) and point MSMBINDIR at it," >&2
+    echo "       or set HCP_REGNAME=FS to run PostFreeSurfer without MSMSulc registration." >&2
+    return 2
+  fi
+}
+
 T1wTemplate="${HCPPIPEDIR_Templates}/MNI152_T1_0.8mm.nii.gz"
 T1wTemplateBrain="${HCPPIPEDIR_Templates}/MNI152_T1_0.8mm_brain.nii.gz"
 T1wTemplate2mm="${HCPPIPEDIR_Templates}/MNI152_T1_2mm.nii.gz"
@@ -153,7 +187,11 @@ LowResMeshes="32"
 SubcorticalGrayLabels="${HCPPIPEDIR_Config}/FreeSurferSubcorticalLabelTableLut.txt"
 FreeSurferLabels="${HCPPIPEDIR_Config}/FreeSurferAllLut.txt"
 ReferenceMyelinMaps="${HCPPIPEDIR_Templates}/standard_mesh_atlases/Conte69.MyelinMap_BC.164k_fs_LR.dscalar.nii"
-RegName="MSMSulc"
+RegName="${HCP_REGNAME:-MSMSulc}"
+
+if [[ "${RegName}" == "MSMSulc" ]]; then
+  check_msm_regoption_support
+fi
 
 echo "Running PostFreeSurferPipeline for ${Subject}"
 "${HCPPIPEDIR}/PostFreeSurfer/PostFreeSurferPipeline.sh" \

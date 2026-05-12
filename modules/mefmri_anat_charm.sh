@@ -54,6 +54,7 @@ CHARM_BRAIN_MASK_MODE="${CHARM_BRAIN_MASK_MODE:-charm}" # charm|hcp
 CHARM_BRAIN_MASK_DILATE_ITERS="${CHARM_BRAIN_MASK_DILATE_ITERS:-1}" # integer >= 0 (used in charm mode)
 CHARM_CORTICAL_RIBBON_EXCLUDE_LABELS="${CHARM_CORTICAL_RIBBON_EXCLUDE_LABELS:-1}" # 0|1
 CHARM_WRITE_CORTICAL_RIBBON="${CHARM_WRITE_CORTICAL_RIBBON:-1}" # 0|1
+CHARM_PYTHON="${CHARM_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 
 # ---- sanity checks ----
 if [ ! -d "${ANAT_DIR}" ]; then
@@ -82,8 +83,8 @@ if [ "${CHARM_SKIP_RUN}" != "1" ]; then
   fi
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 not found in PATH (needed for CHARM socket preflight)." >&2
+if ! command -v "${CHARM_PYTHON}" >/dev/null 2>&1; then
+  echo "ERROR: ${CHARM_PYTHON} not found in PATH (needed for CHARM socket preflight)." >&2
   exit 1
 fi
 
@@ -155,7 +156,7 @@ else
     echo "Reused existing CHARM output on $(date)" > "${LOG_FILE}"
   else
     # ---- preflight: ensure environment allows local sockets for MPI ----
-    if ! python3 - <<'PY'
+    if ! "${CHARM_PYTHON}" - <<'PY'
 import socket
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

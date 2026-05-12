@@ -53,6 +53,11 @@ B. Core neuroimaging software
 - FreeSurfer: `6.0.0` (`freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0-2beb96c`)
 - Connectome Workbench: `2.0.0`
   - commit: `a4824b22b46b2d5afa3e543a483f73faea27bcf5`
+- MSM (Multimodal Surface Matching):
+  - Required when HCP PostFreeSurfer `--regname=MSMSulc` (default).
+  - The pipeline expects an HCP-compatible MSM build that supports `--regoption`
+    (often distributed as `msm_ubuntu_v3` / `MSM_HOCR`).
+  - Configure via `MSMBINDIR` (directory containing `msm`, or the msm binary itself).
 
 C. Python / tedana environment
 - Conda environment name: `mefmri_env`
@@ -118,6 +123,7 @@ Required commands used by the default full pipeline:
 - `bbregister`
 - `tkregister2`
 - `wb_command`
+- `msm` (required when `HCP_REGNAME=MSMSulc`)
 - `parallel`
 - `python3`
 - `tedana`
@@ -149,6 +155,7 @@ Anatomical modules:
   - FreeSurfer `6.0.0`
   - FSL `6.0.4:ddd0a010`
   - Workbench `2.0.0`
+  - MSM (required when `HCP_REGNAME=MSMSulc`)
 
 - `modules/mefmri_anat_charm.sh`
   - SimNIBS CHARM binary

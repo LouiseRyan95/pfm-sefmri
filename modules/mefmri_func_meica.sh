@@ -40,6 +40,7 @@ TEDANA_ICA_METHOD="${TEDANA_ICA_METHOD:-fastica}"              # fastica|robusti
 TEDANA_N_ROBUST_RUNS="${TEDANA_N_ROBUST_RUNS:-10}"
 TEDANA_SEED="${TEDANA_SEED:-42}"
 TEDANA_THREADS="${TEDANA_THREADS:-$NTHREADS}"
+TEDANA_VERBOSE="${TEDANA_VERBOSE:-0}"                        # 0|1
 TEDANA_MASKTYPE="${TEDANA_MASKTYPE:-none}"                     # none|dropout|decay
 TEDANA_CONVENTION="${TEDANA_CONVENTION:-orig}"                 # orig|bids
 TEDANA_OVERWRITE="${TEDANA_OVERWRITE:-1}"                      # 0|1
@@ -47,6 +48,7 @@ TEDANA_LOWMEM="${TEDANA_LOWMEM:-0}"                            # 0|1
 TEDANA_USE_EXTERNAL_MIX="${TEDANA_USE_EXTERNAL_MIX:-0}"        # 0|1
 TEDANA_EXTERNAL_MIX_BASENAME="${TEDANA_EXTERNAL_MIX_BASENAME:-}" # e.g., v10_ica_mixing.tsv (looked up in each run dir)
 MEICA_PARALLEL_JOBS="${MEICA_PARALLEL_JOBS:-$NTHREADS}"
+MEICA_PYTHON="${MEICA_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 
 # Post-tedana reclassification implemented in Python.
 MEICA_RECLASSIFY_ENABLE="${MEICA_RECLASSIFY_ENABLE:-1}"       # 0|1
@@ -127,6 +129,10 @@ case "$TEDANA_LOWMEM" in
   0|1) ;;
   *) die "Invalid TEDANA_LOWMEM=$TEDANA_LOWMEM (use 0|1)" ;;
 esac
+case "$TEDANA_VERBOSE" in
+  0|1) ;;
+  *) die "Invalid TEDANA_VERBOSE=$TEDANA_VERBOSE (use 0|1)" ;;
+esac
 case "$TEDANA_USE_EXTERNAL_MIX" in
   0|1) ;;
   *) die "Invalid TEDANA_USE_EXTERNAL_MIX=$TEDANA_USE_EXTERNAL_MIX (use 0|1)" ;;
@@ -161,7 +167,7 @@ case "$MEICA_NSI_KILL_MODE" in
   *) die "Invalid MEICA_NSI_KILL_MODE=$MEICA_NSI_KILL_MODE (use adaptive|fixed)" ;;
 esac
 
-for cmd in python3 fslmaths fslmerge fslval awk sed parallel; do
+for cmd in "$MEICA_PYTHON" fslmaths fslmerge fslval awk sed parallel; do
   need_cmd "$cmd"
 done
 if [[ "$MEICA_QC_CIFTI_ENABLE" == "1" ]]; then
@@ -294,7 +300,7 @@ list_runs() {
 
 discover_echoes_sorted() {
   local rundir="$1"
-  python3 - "$rundir" "$FuncFilePrefix" <<'PY'
+  "$MEICA_PYTHON" - "$rundir" "$FuncFilePrefix" <<'PY'
 import glob, os, re, sys
 rundir = sys.argv[1]
 prefix = sys.argv[2]
@@ -314,7 +320,7 @@ te_args_from_file() {
   local tefile="$1"
   local cli_profile="${2:-modern}" # modern|legacy
   [[ -f "$tefile" ]] || return 1
-  python3 - "$tefile" "$cli_profile" <<'PY'
+  "$MEICA_PYTHON" - "$tefile" "$cli_profile" <<'PY'
 import sys
 from pathlib import Path
 
@@ -497,7 +503,7 @@ make_component_subset_nifti() {
   local in_4d="$1"
   local ids_file="$2"
   local out_4d="$3"
-  python3 - "$in_4d" "$ids_file" "$out_4d" <<'PY'
+  "$MEICA_PYTHON" - "$in_4d" "$ids_file" "$out_4d" <<'PY'
 import sys
 from pathlib import Path
 import nibabel as nib
@@ -532,7 +538,7 @@ extract_component_ids_from_decisions() {
   local decisions_tsv="$1"
   local column_name="$2"
   local out_ids="$3"
-  python3 - "$decisions_tsv" "$column_name" "$out_ids" <<'PY'
+  "$MEICA_PYTHON" - "$decisions_tsv" "$column_name" "$out_ids" <<'PY'
 import sys
 import pandas as pd
 df = pd.read_csv(sys.argv[1], sep="\t")
@@ -659,6 +665,9 @@ process_run() {
   if [[ "$TEDANA_LOWMEM" == "1" ]]; then
     TEDANA_ARGS+=( --lowmem )
   fi
+  if [[ "$TEDANA_VERBOSE" == "1" ]]; then
+    TEDANA_ARGS+=( --verbose )
+  fi
   if [[ "$TEDANA_CLI_PROFILE" == "modern" && "$TEDANA_OVERWRITE" == "1" ]]; then
     TEDANA_ARGS+=( --overwrite )
   fi
@@ -718,7 +727,7 @@ process_run() {
     if [[ -n "$betas_cifti" ]]; then
       AUTO_ARGS+=( --betas-cifti "$betas_cifti" )
     fi
-    python3 "$MEICA_RECLASSIFY_PY" "${AUTO_ARGS[@]}"
+    "$MEICA_PYTHON" "$MEICA_RECLASSIFY_PY" "${AUTO_ARGS[@]}"
 
     local acc="$reclass_dir/AcceptedComponents.txt"
     local rej="$reclass_dir/RejectedComponents.txt"
@@ -758,6 +767,9 @@ process_run() {
       RECLASS_TEDANA_ARGS+=( --manacc "${MANACC_IDS[@]}" )
       if [[ "$TEDANA_LOWMEM" == "1" ]]; then
         RECLASS_TEDANA_ARGS+=( --lowmem )
+      fi
+      if [[ "$TEDANA_VERBOSE" == "1" ]]; then
+        RECLASS_TEDANA_ARGS+=( --verbose )
       fi
       if [[ "$MEICA_RECLASS_NO_REPORTS" == "1" ]]; then
         RECLASS_TEDANA_ARGS+=( --no-reports )

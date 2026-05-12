@@ -28,6 +28,8 @@ AtlasSpace=${8:-${AtlasSpace:-T1w}}
 FuncDirName=${9:-${FUNC_DIRNAME:-rest}}
 FuncFilePrefix=${10:-${FUNC_FILE_PREFIX:-Rest}}
 ApplyN4Bias=${APPLY_N4_BIAS:-0}
+COREG_PYTHON="${COREG_PYTHON:-${PIPELINE_PYTHON:-python3}}"
+FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
 
 case "${AtlasSpace}" in
 	T1w|MNINonlinear) ;;
@@ -38,10 +40,11 @@ case "${AtlasSpace}" in
 esac
 echo "[coreg] AtlasSpace=${AtlasSpace} (cortical ribbon mask will be generated in selected atlas space)"
 echo "[coreg] Functional naming: func/${FuncDirName}, prefix ${FuncFilePrefix}_*"
+echo "[coreg] FUNC_NOFIELDMAP_MODE=${FUNC_NOFIELDMAP_MODE}"
 
 # Read the JSON sidecars for each scan and write the text files used later in preprocessing.
 
-python3 "$MEDIR"/lib/find_epi_params.py \
+"$COREG_PYTHON" "$MEDIR"/lib/find_epi_params.py \
 --subdir "$Subdir" --func-name "$FuncDirName" --start-session "$StartSession"
 
 # Create SBrefs (average of the first few echoes) for each scan.

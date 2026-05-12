@@ -24,6 +24,8 @@ FM_BET_FRAC="${FM_BET_FRAC:-0.35}"
 FM_SMOOTH_SIGMA_MM="${FM_SMOOTH_SIGMA_MM:-2}"
 USE_WB_SMOOTHING="${USE_WB_SMOOTHING:-1}"
 CLEAN_INTERMEDIATE="${CLEAN_INTERMEDIATE:-1}"
+FIELDMAPS_PYTHON="${FIELDMAPS_PYTHON:-${PIPELINE_PYTHON:-python3}}"
+FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
 
 # Phase encoding handling:
 # - infer from JSON by default
@@ -41,6 +43,8 @@ ALL_DIR="$FM_DIR/AllFMs"
 TOPUP_DIR="$ALL_DIR/topup"
 LOG_DIR="$FM_DIR/logs"
 ACQ="$FM_DIR/acqparams.txt"
+FM_MODE_TXT="$FM_DIR/FIELDMAP_MODE.txt"
+FM_QA_TXT="$QA_DIR/FieldMapFallback.txt"
 
 mkdir -p "$FM_DIR" "$ALL_DIR" "$TOPUP_DIR" "$LOG_DIR" "$QA_DIR"
 
@@ -60,23 +64,53 @@ cleanup_legacy_txt_artifacts() {
   find "$Subdir" -type f \( -name "AllFM.txt" -o -name "AllFMs.txt" \) -delete 2>/dev/null || true
 }
 trap cleanup_legacy_txt_artifacts EXIT
+[[ "$FUNC_NOFIELDMAP_MODE" == "0" || "$FUNC_NOFIELDMAP_MODE" == "1" ]] || die "FUNC_NOFIELDMAP_MODE must be 0 or 1"
 
-for c in python3 topup mcflirt fslmaths fslmerge flirt bet fslnvols convert_xfm parallel; do need_cmd "$c"; done
-for c in mri_binarize mri_convert bbregister tkregister2; do need_cmd "$c"; done
+for c in "$FIELDMAPS_PYTHON" fslmaths; do need_cmd "$c"; done
 WB_OK=0
-if command -v wb_command >/dev/null 2>&1 && [[ "$USE_WB_SMOOTHING" == "1" ]]; then
-  WB_OK=1
+if [[ "$FUNC_NOFIELDMAP_MODE" == "0" ]]; then
+  for c in topup mcflirt fslmerge flirt bet fslnvols convert_xfm parallel; do need_cmd "$c"; done
+  for c in mri_binarize mri_convert bbregister tkregister2; do need_cmd "$c"; done
+  if command -v wb_command >/dev/null 2>&1 && [[ "$USE_WB_SMOOTHING" == "1" ]]; then
+    WB_OK=1
+  fi
+fi
+
+[[ -f "$T1" ]] || die "Missing: $T1"
+[[ -f "$T1B" ]] || die "Missing: $T1B"
+
+write_no_fieldmap_outputs() {
+  local reason="$1"
+  rm -rf "$ALL_DIR" "$TOPUP_DIR"
+  mkdir -p "$ALL_DIR" "$TOPUP_DIR" "$QA_DIR"
+  printf 'none\n' > "$FM_MODE_TXT"
+  cat > "$FM_QA_TXT" <<EOF
+No-fieldmap functional mode was used for this subject.
+Reason: $reason
+Susceptibility distortion correction was skipped.
+Avg_FM_rads_acpc.nii.gz is a zero-valued placeholder in T1w/ACPC space.
+Avg_FM_mag_acpc.nii.gz and Avg_FM_mag_acpc_brain.nii.gz are anatomical compatibility images.
+EOF
+  fslmaths "$T1B" -mul 0 "$FM_DIR/Avg_FM_rads_acpc.nii.gz" >/dev/null 2>&1
+  cp -f "$T1" "$FM_DIR/Avg_FM_mag_acpc.nii.gz"
+  cp -f "$T1B" "$FM_DIR/Avg_FM_mag_acpc_brain.nii.gz"
+  : > "$LOG_DIR/topup_parallel.log"
+  log "Fieldmap module complete in no-fieldmap mode."
+  exit 0
+}
+
+if [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]]; then
+  write_no_fieldmap_outputs "FUNC_NOFIELDMAP_MODE=1"
 fi
 
 [[ -d "$RAW_FM_DIR" ]] || die "Missing raw fieldmap dir: $RAW_FM_DIR"
-[[ -f "$T1" ]] || die "Missing: $T1"
-[[ -f "$T1B" ]] || die "Missing: $T1B"
 [[ -f "$ASEG" ]] || die "Missing: $ASEG"
 [[ -x "$EPI_REG_DOF" ]] || die "Missing executable: $EPI_REG_DOF"
 [[ -f "$EYE_DAT" ]] || die "Missing: $EYE_DAT"
+printf 'measured\n' > "$FM_MODE_TXT"
 
 # Build acqparams.txt and the QA summary from BIDS JSON sidecars.
-python3 - "$RAW_FM_DIR" "$ACQ" "$QA_DIR/AvgFieldMap.txt" "$FM_PE_MODE" \
+"$FIELDMAPS_PYTHON" - "$RAW_FM_DIR" "$ACQ" "$QA_DIR/AvgFieldMap.txt" "$FM_PE_MODE" \
   "$FM_AP_PE_DIR" "$FM_PA_PE_DIR" "$FM_DEFAULT_AP_VEC" "$FM_DEFAULT_PA_VEC" <<'PY'
 import collections
 import json

@@ -11,7 +11,7 @@ FuncFilePrefix="${6:-${FUNC_FILE_PREFIX:-Rest}}"
 
 SubjectDir="${StudyFolder}/${Subject}"
 PFM_STRATEGY="${PFM_STRATEGY:-ridge_fusion}"
-PFM_PYTHON="${PFM_PYTHON:-python3}"
+PFM_PYTHON="${PFM_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 PFM_RESOURCES_ROOT="${PFM_RESOURCES_ROOT:-${MEDIR}/res0urces}"
 PFM_INFOMAP_WRAPPER="${PFM_INFOMAP_WRAPPER:-${PFM_RESOURCES_ROOT}/PFM-InfoMap-Tmp/pfm_wrapper.m}"
 PFM_OUTDIR="${PFM_OUTDIR:-${SubjectDir}/func/${FuncDirName}/PFM}"

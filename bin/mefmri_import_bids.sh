@@ -8,10 +8,12 @@
 
 set -euo pipefail
 
+PIPELINE_PYTHON="${PIPELINE_PYTHON:-python3}"
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   MEDIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-  python3 "$MEDIR/lib/mefmri_bids_import.py" --help
+  "$PIPELINE_PYTHON" "$MEDIR/lib/mefmri_bids_import.py" --help
   exit 0
 fi
 
@@ -23,4 +25,4 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MEDIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-python3 "$MEDIR/lib/mefmri_bids_import.py" "$@"
+"$PIPELINE_PYTHON" "$MEDIR/lib/mefmri_bids_import.py" "$@"

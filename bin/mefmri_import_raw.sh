@@ -173,8 +173,9 @@ export IMPORT_SBREF_REGEX="${IMPORT_SBREF_REGEX:-}"
 export IMPORT_FMAP_AP_REGEX="${IMPORT_FMAP_AP_REGEX:-}"
 export IMPORT_FMAP_PA_REGEX="${IMPORT_FMAP_PA_REGEX:-}"
 export IMPORT_IGNORE_REGEXES_SERIALIZED="$(serialize_array IMPORT_IGNORE_REGEXES)"
+PIPELINE_PYTHON="${PIPELINE_PYTHON:-python3}"
 
-python3 "$MEDIR/lib/mefmri_raw_import.py" \
+"$PIPELINE_PYTHON" "$MEDIR/lib/mefmri_raw_import.py" \
   "$RAW_DICOM_DIR" \
   "$SUBJECT_DIR" \
   --session "$SESSION" \

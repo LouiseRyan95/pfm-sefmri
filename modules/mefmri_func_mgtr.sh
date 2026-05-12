@@ -1,16 +1,18 @@
 #!/bin/bash
 # CJL; (cjl2007@med.cornell.edu)
 
-Subject=$1
-StudyFolder=$2
-Subdir="$StudyFolder"/"$Subject"
-MEDIR=$3
-StartSession=$4
+Subject="${1:?missing Subject}"
+StudyFolder="${2:?missing StudyFolder}"
+Subdir="$StudyFolder/$Subject"
+MEDIR="${3:?missing MEDIR}"
+StartSession="${4:?missing StartSession}"
 FuncDirName="${FUNC_DIRNAME:-rest}"
 FuncFilePrefix="${FUNC_FILE_PREFIX:-Rest}"
+MGTR_INPUT_TAG="${MGTR_INPUT_TAG:-${PIPELINE_DENOISE_OUTPUT_TAG:-OCME+MEICA}}"
+MGTR_OUTPUT_TAG="${MGTR_OUTPUT_TAG:-${MGTR_INPUT_TAG}+MGTR}"
 
-# python runtime override (default: python3 on PATH)
-: "${MGTR_PYTHON:=python3}"
+# python runtime override (default: PIPELINE_PYTHON, else python3 on PATH)
+: "${MGTR_PYTHON:=${PIPELINE_PYTHON:-python3}}"
 MGTR_PY_SCRIPT="$MEDIR/lib/mgtr_volume.py"
 if [ ! -f "$MGTR_PY_SCRIPT" ]; then
 	echo "ERROR: missing MGTR Python script: $MGTR_PY_SCRIPT"
@@ -31,9 +33,9 @@ for s in $sessions ; do
 	# Iterate over runs.
 	for r in $runs ; do
 
-		Input="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_OCME+MEICA.nii.gz"
-		Output_MGTR="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_OCME+MEICA+MGTR"
-		Output_Betas="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_OCME+MEICA+MGTR_Betas"
+		Input="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_${MGTR_INPUT_TAG}.nii.gz"
+		Output_MGTR="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_${MGTR_OUTPUT_TAG}"
+		Output_Betas="$Subdir/func/$FuncDirName/session_$s/run_$r/${FuncFilePrefix}_${MGTR_OUTPUT_TAG}_Betas"
 
 		if [ ! -f "$Input" ]; then
 			echo "ERROR: missing MGTR input: $Input"
