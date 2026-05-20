@@ -1,6 +1,9 @@
 #!/bin/bash
 # CJL; (cjl2007@med.cornell.edu)
 
+set -euo pipefail
+shopt -s nullglob
+
 MEDIR=$1
 Subject=$2
 StudyFolder=$3
@@ -12,7 +15,7 @@ StartSession=$7
 AtlasSpace=${8:-${AtlasSpace:-T1w}}
 FuncDirName=${9:-${FUNC_DIRNAME:-rest}}
 FuncFilePrefix=${10:-${FUNC_FILE_PREFIX:-Rest}}
-FuncXfmsDir="${FUNC_XFMS_DIRNAME:-rest}"
+FuncXfmsDir="${FUNC_XFMS_DIRNAME:-$FuncDirName}"
 
 case "${AtlasSpace}" in
 	T1w|MNINonlinear) ;;
@@ -54,6 +57,7 @@ rm "$Subdir"/AllScans.txt # remove helper file
 func () {
 	ApplyN4Bias=${APPLY_N4_BIAS:-0}
 	KeepMCF=${HEADMOTION_KEEP_MCF:-0}
+	ReorientFuncToStd=${FUNC_REORIENT_TO_STD:-1}
 	local ProcDir="$3/func/$FuncDirName/$5"
 	local UnprocDir="$3/func/unprocessed/$FuncDirName/$5"
 	local BrainMask="$3/func/xfms/$FuncXfmsDir/T1w_acpc_brain_func_mask.nii.gz"
@@ -69,14 +73,33 @@ func () {
 	rm -rf "$ProcDir"/Rest_AVG_mcf.mat "$ProcDir"/Rest_AVG_mcf.mat+ # remove stale split/mat dirs from prior runs
 	mkdir "$ProcDir"/vols/
 
+	reorient_to_std_inplace() {
+		local img="$1"
+		local tmp="${img%.nii.gz}_reorient_tmp.nii.gz"
+		[[ "$ReorientFuncToStd" == "1" ]] || return 0
+		fslreorient2std "$img" "$tmp"
+		mv -f "$tmp" "$img"
+	}
+
 	# Read acquisition parameters.
+	[[ -f "$ProcDir"/TE.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/TE.txt" 1>&2; return 1; }
+	[[ -f "$ProcDir"/TR.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/TR.txt" 1>&2; return 1; }
+	[[ -f "$ProcDir"/SliceTiming.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/SliceTiming.txt" 1>&2; return 1; }
 	te=$(cat "$ProcDir"/TE.txt)
 	tr=$(cat "$ProcDir"/TR.txt)
 	n_te=0
 
 	# Read run-specific target and warp pointers.
+	[[ -f "$ProcDir"/IntermediateCoregTarget.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/IntermediateCoregTarget.txt" 1>&2; return 1; }
 	IntermediateCoregTarget=$(cat "$ProcDir"/IntermediateCoregTarget.txt)
-	Intermediate2ACPCWarp=$(cat "$ProcDir"/Intermediate2ACPCWarp.txt)
+	if [[ "${FUNC_NOFIELDMAP_MODE:-0}" == "1" ]]; then
+		[[ -f "$ProcDir"/Intermediate2ACPCMat.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/Intermediate2ACPCMat.txt" 1>&2; return 1; }
+		Intermediate2ACPCMat=$(cat "$ProcDir"/Intermediate2ACPCMat.txt)
+		[[ -f "$Intermediate2ACPCMat" ]] || { echo "[ERROR] headmotion missing affine target $Intermediate2ACPCMat" 1>&2; return 1; }
+	else
+		[[ -f "$ProcDir"/Intermediate2ACPCWarp.txt ]] || { echo "[ERROR] headmotion missing $ProcDir/Intermediate2ACPCWarp.txt" 1>&2; return 1; }
+		Intermediate2ACPCWarp=$(cat "$ProcDir"/Intermediate2ACPCWarp.txt)
+	fi
 
 	# Iterate over echoes.
 	for i in $te ; do
@@ -86,17 +109,25 @@ func () {
 
 		# skip the longer te;
 		if [[ $i < 60 ]] ; then 
+			raw_echo=( "$UnprocDir"/"$FuncFilePrefix"*_E"$n_te".nii.gz )
+			[[ "${#raw_echo[@]}" -gt 0 ]] || { echo "[ERROR] headmotion missing raw echo $n_te in $UnprocDir" 1>&2; return 1; }
+			echo_copy="$ProcDir"/vols/E"$n_te"_source.nii.gz
+			cp "${raw_echo[0]}" "$echo_copy"
+			reorient_to_std_inplace "$echo_copy"
 
 			# split original 4D resting-state file into single 3D vols.;
-			fslsplit "$UnprocDir"/"$FuncFilePrefix"*_E"$n_te".nii.gz \
+			fslsplit "$echo_copy" \
 			"$ProcDir"/vols/E"$n_te"_
+			rm -f "$echo_copy"
 
 		fi
 	
 	done
 
 	# Iterate over the individual volumes.
-	for i in $(seq -f "%04g" 0 $((`fslnvols "$UnprocDir"/"$FuncFilePrefix"*_E1.nii.gz` - 1))) ; do
+	raw_e1=( "$UnprocDir"/"$FuncFilePrefix"*_E1.nii.gz )
+	[[ "${#raw_e1[@]}" -gt 0 ]] || { echo "[ERROR] headmotion missing first-echo input in $UnprocDir" 1>&2; return 1; }
+	for i in $(seq -f "%04g" 0 $((`fslnvols "${raw_e1[0]}"` - 1))) ; do
 
 	  	# combine te;
 	  	fslmerge -t "$ProcDir"/vols/AVG_"$i".nii.gz "$ProcDir"/vols/E*_"$i".nii.gz
@@ -155,8 +186,11 @@ func () {
 	for e in $(seq 1 1 "$n_te") ; do
 
 		# copy over echo "e"; 
-		cp "$UnprocDir"/"$FuncFilePrefix"*_E"$e".nii.gz \
+		raw_echo=( "$UnprocDir"/"$FuncFilePrefix"*_E"$e".nii.gz )
+		[[ "${#raw_echo[@]}" -gt 0 ]] || { echo "[ERROR] headmotion missing raw echo $e in $UnprocDir" 1>&2; return 1; }
+		cp "${raw_echo[0]}" \
 		"$ProcDir"/"$FuncFilePrefix"_E"$e".nii.gz
+		reorient_to_std_inplace "$ProcDir"/"$FuncFilePrefix"_E"$e".nii.gz
 
 		# remove the first few volumes if needed;
 		if [[ -f "$ProcDir"/rmVols.txt ]]; then
@@ -181,10 +215,18 @@ func () {
 			return 1
 		fi
 
-		# Warp image volumes into ACPC grid using legacy serial behavior.
+		# Apply motion + atlas transforms volume-wise.
 		for (( i=0; i<${#images[@]}; i++ )); do
-			applywarp --interp=spline --in="${images["$i"]}" --premat="${mats["$i"]}" \
-			--warp="$Intermediate2ACPCWarp" --out="${images["$i"]}" --ref="$2"
+			if [[ "${FUNC_NOFIELDMAP_MODE:-0}" == "1" ]]; then
+				combined_mat="${mats["$i"]}_to_acpc.mat"
+				convert_xfm -omat "$combined_mat" -concat "$Intermediate2ACPCMat" "${mats["$i"]}"
+				flirt -in "${images["$i"]}" -ref "$2" -out "${images["$i"]}" \
+				-applyxfm -init "$combined_mat" -interp spline
+				rm -f "$combined_mat"
+			else
+				applywarp --interp=spline --in="${images["$i"]}" --premat="${mats["$i"]}" \
+				--warp="$Intermediate2ACPCWarp" --out="${images["$i"]}" --ref="$2"
+			fi
 		done
 
 		# merge corrected images into a single file & perform a brain extraction
@@ -231,6 +273,6 @@ func () {
 
 }
 
-export FuncDirName FuncFilePrefix AtlasSpace
+export FuncDirName FuncFilePrefix FuncXfmsDir AtlasSpace FUNC_NOFIELDMAP_MODE
 export -f func # correct for head motion and warp to atlas space in single spline warp
 parallel --jobs $NTHREADS func ::: $MEDIR ::: $AtlasTemplate ::: $Subdir ::: $DOF ::: $AllScans #> /dev/null 2>&1  
