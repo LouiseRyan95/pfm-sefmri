@@ -32,7 +32,7 @@ START_FROM_MODULE="anat_charm"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|
 STOP_AFTER_MODULE="pfm"          # "" to run full chain
 
 # Functional naming and reference space
-FUNC_DIRNAME="rest"
+FUNC_DIRNAME="rest"              # task folder name under func/unprocessed/ (rest is conventional; any task name is valid)
 FUNC_FILE_PREFIX="Rest"
 FUNC_XFMS_DIRNAME=""             # empty => follow FUNC_DIRNAME; set explicitly only for shared xfm namespaces
 DOF=6
@@ -250,7 +250,7 @@ NSI_RELIABILITY_NSI_T=10
 NSI_RELIABILITY_QUERY_T=60
 NSI_EXTERNAL_ROOT="$MEDIR/lib/pfm-nsi"
 NSI_EXTERNAL_ENTRY="pfm_nsi.cli"
-NSI_EXTERNAL_OUT_SUBDIR=""              # empty => write directly to func/qa/NSI
+NSI_EXTERNAL_OUT_SUBDIR=""              # empty => write directly to func/<FUNC_DIRNAME>/qa/NSI
 NSI_EXTERNAL_PREFIX="pfm_nsi"
 NSI_EXTERNAL_USABILITY="$NSI_USABILITY_MODEL"
 NSI_EXTERNAL_RELIABILITY="$NSI_RELIABILITY_MODEL"

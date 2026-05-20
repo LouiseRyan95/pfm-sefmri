@@ -66,7 +66,7 @@ FD_TAG="${NSI_FD_THRESHOLD//./p}"
 BASE="${FuncFilePrefix}_${NSI_INPUT_TAG}"
 CENSORED_CIFTI="${StudyFolder}/${Subject}/func/${FuncDirName}/${NSI_CONCAT_OUT_SUBDIR}/${BASE}_Concatenated+FDlt${FD_TAG}.dtseries.nii"
 SCAN_INFO_JSON="${StudyFolder}/${Subject}/func/${FuncDirName}/${NSI_CONCAT_OUT_SUBDIR}/ScanInfo.json"
-EXTERNAL_OUTDIR_BASE="${StudyFolder}/${Subject}/func/qa/NSI"
+EXTERNAL_OUTDIR_BASE="${StudyFolder}/${Subject}/func/${FuncDirName}/qa/NSI"
 EXTERNAL_OUTDIR="$EXTERNAL_OUTDIR_BASE"
 if [[ -n "${NSI_EXTERNAL_OUT_SUBDIR}" ]]; then
   EXTERNAL_OUTDIR="$EXTERNAL_OUTDIR_BASE/${NSI_EXTERNAL_OUT_SUBDIR}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No-MATLAB fieldmap module.
 # Call signature:
-#   mefmri_func_fieldmaps.sh <MEDIR> <Subject> <StudyFolder> <NTHREADS> <StartSession>
+#   mefmri_func_fieldmaps.sh <MEDIR> <Subject> <StudyFolder> <NTHREADS> <StartSession> [FuncDirName]
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -11,14 +11,15 @@ Subject="${2:?missing Subject}"
 StudyFolder="${3:?missing StudyFolder}"
 NTHREADS="${4:?missing NTHREADS}"
 StartSession="${5:-1}"
+FuncDirName="${6:-${FUNC_DIRNAME:-rest}}"
 
 Subdir="$StudyFolder/$Subject"
 [[ -d "$Subdir" ]] || { echo "ERROR: missing subject dir: $Subdir" >&2; exit 2; }
 
 # Optional knobs from wrapper config.
-FM_RAW_DIR_REL="${FM_RAW_DIR_REL:-func/unprocessed/field_maps}"
-FM_OUT_DIR_REL="${FM_OUT_DIR_REL:-func/field_maps}"
-FM_QA_DIR_REL="${FM_QA_DIR_REL:-func/qa}"
+FM_RAW_DIR_REL="${FM_RAW_DIR_REL:-func/unprocessed/${FuncDirName}/field_maps}"
+FM_OUT_DIR_REL="${FM_OUT_DIR_REL:-func/${FuncDirName}/field_maps}"
+FM_QA_DIR_REL="${FM_QA_DIR_REL:-func/${FuncDirName}/qa}"
 TOPUP_CONFIG="${TOPUP_CONFIG:-b02b0.cnf}"
 FM_BET_FRAC="${FM_BET_FRAC:-0.35}"
 FM_SMOOTH_SIGMA_MM="${FM_SMOOTH_SIGMA_MM:-2}"
@@ -65,6 +66,9 @@ cleanup_legacy_txt_artifacts() {
 }
 trap cleanup_legacy_txt_artifacts EXIT
 [[ "$FUNC_NOFIELDMAP_MODE" == "0" || "$FUNC_NOFIELDMAP_MODE" == "1" ]] || die "FUNC_NOFIELDMAP_MODE must be 0 or 1"
+log "Functional task: ${FuncDirName}"
+log "Raw fieldmap dir: ${RAW_FM_DIR}"
+log "Processed fieldmap dir: ${FM_DIR}"
 
 for c in "$FIELDMAPS_PYTHON" fslmaths; do need_cmd "$c"; done
 WB_OK=0
@@ -260,14 +264,16 @@ rm -rf "$Subdir/anat/T1w/freesurfer" >/dev/null 2>&1 || true
 cp -rf "$Subdir/anat/T1w/$Subject" "$Subdir/anat/T1w/freesurfer" >/dev/null 2>&1
 
 topup_one() {
-  local Subdir="$1"
-  local tag="$2"
-  local TOPUP_CONFIG="$3"
-  local OUTROOT="$Subdir/func/field_maps/AllFMs/topup/$tag"
+  local raw_fm_dir="$1"
+  local fm_dir="$2"
+  local acq="$3"
+  local tag="$4"
+  local TOPUP_CONFIG="$5"
+  local OUTROOT="$fm_dir/AllFMs/topup/$tag"
   mkdir -p "$OUTROOT"
 
-  cp -f "$Subdir/func/unprocessed/field_maps/AP_${tag}.nii.gz" "$OUTROOT/AP_${tag}.nii.gz"
-  cp -f "$Subdir/func/unprocessed/field_maps/PA_${tag}.nii.gz" "$OUTROOT/PA_${tag}.nii.gz"
+  cp -f "$raw_fm_dir/AP_${tag}.nii.gz" "$OUTROOT/AP_${tag}.nii.gz"
+  cp -f "$raw_fm_dir/PA_${tag}.nii.gz" "$OUTROOT/PA_${tag}.nii.gz"
 
   local nVols
   nVols="$(fslnvols "$OUTROOT/AP_${tag}.nii.gz")"
@@ -280,7 +286,7 @@ topup_one() {
 
   fslmerge -t "$OUTROOT/AP_PA_${tag}.nii.gz" "$OUTROOT/AP_${tag}.nii.gz" "$OUTROOT/PA_${tag}.nii.gz" >/dev/null 2>&1
   topup --imain="$OUTROOT/AP_PA_${tag}.nii.gz" \
-    --datain="$Subdir/func/field_maps/acqparams.txt" \
+    --datain="$acq" \
     --iout="$OUTROOT/FM_mag_${tag}.nii.gz" \
     --fout="$OUTROOT/FM_hz_${tag}.nii.gz" \
     --config="$TOPUP_CONFIG" >/dev/null 2>&1
@@ -289,7 +295,7 @@ topup_one() {
 }
 export -f topup_one
 
-parallel --jobs "$NTHREADS" topup_one ::: "$Subdir" ::: "${TAGS[@]}" ::: "$TOPUP_CONFIG" \
+parallel --jobs "$NTHREADS" topup_one ::: "$RAW_FM_DIR" ::: "$FM_DIR" ::: "$ACQ" ::: "${TAGS[@]}" ::: "$TOPUP_CONFIG" \
   >"$LOG_DIR/topup_parallel.log" 2>&1 || die "TOPUP failed. See $LOG_DIR/topup_parallel.log"
 
 for tag in "${TAGS[@]}"; do

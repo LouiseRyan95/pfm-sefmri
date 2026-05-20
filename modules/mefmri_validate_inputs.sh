@@ -28,7 +28,7 @@ Subject="$(basename "$SubjectDir")"
 
 ANAT_UNPROC="$SubjectDir/anat/unprocessed"
 FUNC_UNPROC="$SubjectDir/func/unprocessed/$FuncDirName"
-FM_UNPROC="${FM_RAW_DIR_REL:-func/unprocessed/field_maps}"
+FM_UNPROC="${FM_RAW_DIR_REL:-func/unprocessed/${FuncDirName}/field_maps}"
 FM_UNPROC="$SubjectDir/$FM_UNPROC"
 
 declare -a ERRORS=()

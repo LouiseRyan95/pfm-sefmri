@@ -4,7 +4,7 @@
 # Usage:
 #   mefmri_import_bids.sh <BIDS_ROOT> <SUBJECT> <OUT_SUBJECT_DIR> [options]
 # Example:
-#   mefmri_import_bids.sh /data/bids 06 /data/study/ME06 --task rest --mode symlink --overwrite
+#   mefmri_import_bids.sh /data/bids 06 /data/study/ME06 --task rest --func-dirname rest --func-prefix Rest --mode symlink --overwrite
 
 set -euo pipefail
 

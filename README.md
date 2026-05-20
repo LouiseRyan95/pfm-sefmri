@@ -120,6 +120,15 @@ ME001/
   func/
     unprocessed/
       rest/
+        field_maps/
+          AP_S1_R1.nii.gz
+          AP_S1_R1.json
+          AP_S1_R2.nii.gz
+          AP_S1_R2.json
+          PA_S1_R1.nii.gz
+          PA_S1_R1.json
+          PA_S1_R2.nii.gz
+          PA_S1_R2.json
         session_1/
           run_1/
             Rest_S1_R1_E1.nii.gz
@@ -139,15 +148,6 @@ ME001/
             Rest_S1_R2_E3.json
             Rest_S1_R2_E4.nii.gz
             Rest_S1_R2_E4.json
-      field_maps/
-        AP_S1_R1.nii.gz
-        AP_S1_R1.json
-        AP_S1_R2.nii.gz
-        AP_S1_R2.json
-        PA_S1_R1.nii.gz
-        PA_S1_R1.json
-        PA_S1_R2.nii.gz
-        PA_S1_R2.json
 ```
 ## Notes
 
@@ -163,7 +163,11 @@ Functional runs should be organized by session and run, with one NIfTI file and 
 
 The number of echoes is flexible. The example above shows 4 echoes, but runs may contain 3, 5, or however many echoes are present in the acquisition.
 
-Field maps should be placed in func/unprocessed/field_maps/, with a matching JSON sidecar for each NIfTI file.
+`rest` / `Rest` is the standard default (`FUNC_DIRNAME="rest"`, `FUNC_FILE_PREFIX="Rest"`), but any task name can be used. For example, set `FUNC_DIRNAME="agt"` and `FUNC_FILE_PREFIX="AGT"` to process `func/unprocessed/agt/` with the same anatomical outputs.
+
+Field maps should be placed in `func/unprocessed/<FUNC_DIRNAME>/field_maps/`, with a matching JSON sidecar for each NIfTI file. Processed field maps are written to `func/<FUNC_DIRNAME>/field_maps/`, so acquisition-specific field maps stay tied to the task that uses them.
+
+Set `FUNC_DIRNAME="All"` to process every task folder discovered under `func/unprocessed/`. Anatomy runs once, then each task is processed separately.
 
 AP and PA are shown for illustrative purposes only. Other phase-encoding direction pairs (for example, RL / LR) are also acceptable, provided they are named consistently and specified correctly in the pipeline configuration.
 
@@ -214,6 +218,8 @@ bash bin/mefmri_import_bids.sh \
   06 \
   /path/to/study/ME06 \
   --task rest \
+  --func-dirname rest \
+  --func-prefix Rest \
   --mode symlink \
   --overwrite
 ```
@@ -246,7 +252,7 @@ When `RUN_CONFIG_SNAPSHOT=1`, each run writes:
 
 When `NSI_USE_EXTERNAL_CLI=1`, NSI outputs are written under:
 
-- `func/qa/NSI/`
+- `func/<FUNC_DIRNAME>/qa/NSI/`
 
 ## Author
 

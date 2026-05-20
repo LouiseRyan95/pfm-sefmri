@@ -1,6 +1,9 @@
 #!/bin/bash
 # CJL; (cjl2007@med.cornell.edu)
 
+set -euo pipefail
+shopt -s nullglob
+
 MEDIR=$1
 Subject=$2
 StudyFolder=$3
@@ -27,9 +30,13 @@ StartSession=$7
 AtlasSpace=${8:-${AtlasSpace:-T1w}}
 FuncDirName=${9:-${FUNC_DIRNAME:-rest}}
 FuncFilePrefix=${10:-${FUNC_FILE_PREFIX:-Rest}}
+FuncXfmsDir=${FUNC_XFMS_DIRNAME:-${FuncDirName}}
 ApplyN4Bias=${APPLY_N4_BIAS:-0}
 COREG_PYTHON="${COREG_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
+FM_OUT_DIR_REL="${FM_OUT_DIR_REL:-func/${FuncDirName}/field_maps}"
+FM_DIR="$Subdir/$FM_OUT_DIR_REL"
+COREG_QA_DIR="${COREG_QA_DIR:-$Subdir/func/${FuncDirName}/qa/CoregQA}"
 
 case "${AtlasSpace}" in
 	T1w|MNINonlinear) ;;
@@ -40,19 +47,59 @@ case "${AtlasSpace}" in
 esac
 echo "[coreg] AtlasSpace=${AtlasSpace} (cortical ribbon mask will be generated in selected atlas space)"
 echo "[coreg] Functional naming: func/${FuncDirName}, prefix ${FuncFilePrefix}_*"
+echo "[coreg] Transform naming: func/xfms/${FuncXfmsDir}"
+echo "[coreg] Fieldmap directory: ${FM_DIR}"
+echo "[coreg] Coreg QA directory: ${COREG_QA_DIR}"
 echo "[coreg] FUNC_NOFIELDMAP_MODE=${FUNC_NOFIELDMAP_MODE}"
+
+ensure_white_wmseg() {
+	local fs_mri_dir="$Subdir/anat/T1w/$Subject/mri"
+	local aseg_mgz="$fs_mri_dir/aparc+aseg.mgz"
+	local white_mgz="$fs_mri_dir/white.mgz"
+	local white_nii="$fs_mri_dir/white.nii.gz"
+	if [[ -f "$white_nii" ]]; then
+		echo "$white_nii"
+		return 0
+	fi
+	[[ -f "$aseg_mgz" ]] || {
+		echo "ERROR: missing FreeSurfer aseg for WM segmentation: $aseg_mgz" >&2
+		exit 1
+	}
+	mri_binarize --i "$aseg_mgz" --wm --o "$white_mgz" >/dev/null 2>&1
+	mri_convert -i "$white_mgz" -o "$white_nii" --like "$Subdir/anat/T1w/T1w_acpc_dc_restore.nii.gz" >/dev/null 2>&1
+	[[ -f "$white_nii" ]] || {
+		echo "ERROR: failed to create WM segmentation: $white_nii" >&2
+		exit 1
+	}
+	echo "$white_nii"
+}
 
 # Read the JSON sidecars for each scan and write the text files used later in preprocessing.
 
 "$COREG_PYTHON" "$MEDIR"/lib/find_epi_params.py \
---subdir "$Subdir" --func-name "$FuncDirName" --start-session "$StartSession"
+--subdir "$Subdir" --func-name "$FuncDirName" --start-session "$StartSession" \
+$( [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]] && printf '%s' "--no-fieldmap-mode" )
+WMSEG_NII="$(ensure_white_wmseg)"
+SBREF_FALLBACK_SKIP_TRS="${SBREF_FALLBACK_SKIP_TRS:-10}"
+SBREF_REORIENT_TO_STD="${SBREF_REORIENT_TO_STD:-1}"
+
+reorient_to_std_inplace() {
+	local img="$1"
+	local tmp="${img%.nii.gz}_reorient_tmp.nii.gz"
+	[[ "$SBREF_REORIENT_TO_STD" == "1" ]] || return 0
+	[[ -f "$img" ]] || return 1
+	fslreorient2std "$img" "$tmp"
+	mv -f "$tmp" "$img"
+}
 
 # Create SBrefs (average of the first few echoes) for each scan.
 # These serve as intermediate coregistration targets when needed.
 
 # Create a working directory for SBref generation.
 mkdir -p "$Subdir"/func/"$FuncDirName"/AverageSBref
+mkdir -p "$Subdir"/func/xfms/"$FuncXfmsDir"
 WDIR="$Subdir"/func/"$FuncDirName"/AverageSBref
+XfmsDir="$Subdir"/func/xfms/"$FuncXfmsDir"
 
 # count the number of sessions
 sessions=("$Subdir"/func/unprocessed/"$FuncDirName"/session_*)
@@ -69,6 +116,10 @@ for s in $sessions ; do
 	for r in $runs ; do 
 
 		# Read echo times.
+		[[ -f "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/TE.txt ]] || {
+			echo "ERROR: missing TE.txt for session_${s}/run_${r}. Run input validation/import before coreg." >&2
+			exit 1
+		}
 		te=$(cat "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/TE.txt)
 		n_te=0
 
@@ -80,14 +131,24 @@ for s in $sessions ; do
 
 			# If there is no single-band reference image, drop the initial non-steady-state volumes and create one.
 			if [ ! -f "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref_S"$s"_R"$r"_E"$n_te".nii.gz ]; then
-				fslroi "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/"$FuncFilePrefix"_S"$s"_R"$r"_E"$n_te".nii.gz "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref_S"$s"_R"$r"_E"$n_te".nii.gz 10 1
-				echo 10 > "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/rmVols.txt
+				[[ -f "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/"$FuncFilePrefix"_S"$s"_R"$r"_E"$n_te".nii.gz ]] || {
+					echo "ERROR: missing raw echo input for session_${s}/run_${r}/echo_${n_te} under func/unprocessed/${FuncDirName}. Import BIDS/raw inputs first." >&2
+					exit 1
+				}
+				fslroi "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/"$FuncFilePrefix"_S"$s"_R"$r"_E"$n_te".nii.gz "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref_S"$s"_R"$r"_E"$n_te".nii.gz "$SBREF_FALLBACK_SKIP_TRS" 1
+				echo "$SBREF_FALLBACK_SKIP_TRS" > "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/rmVols.txt
 			fi
+			reorient_to_std_inplace "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref_S"$s"_R"$r"_E"$n_te".nii.gz
 
 		done
 
 		# Use the first echo to estimate the bias field.
-		cp "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref*_E1.nii.gz "$WDIR"/TMP_1.nii.gz
+		sbref_e1=( "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref*_E1.nii.gz )
+		[[ "${#sbref_e1[@]}" -gt 0 ]] || {
+			echo "ERROR: failed to create/find SBref E1 for session_${s}/run_${r}." >&2
+			exit 1
+		}
+		cp "${sbref_e1[0]}" "$WDIR"/TMP_1.nii.gz
 		
 		# Estimate field inhomogeneity and resample the bias field image (ANTs -> FSL orientation).
 		if [[ "$ApplyN4Bias" -eq 1 ]]; then
@@ -105,7 +166,12 @@ for s in $sessions ; do
 			if [[ $i < 60 ]] ; then 
 
 				n_te=`expr $n_te + 1`
-				cp "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref*_E"$n_te.nii".gz "$WDIR"/TMP_"$n_te".nii.gz
+				sbref_echo=( "$Subdir"/func/unprocessed/"$FuncDirName"/session_"$s"/run_"$r"/SBref*_E"$n_te".nii.gz )
+				[[ "${#sbref_echo[@]}" -gt 0 ]] || {
+					echo "ERROR: missing SBref echo ${n_te} for session_${s}/run_${r}." >&2
+					exit 1
+				}
+				cp "${sbref_echo[0]}" "$WDIR"/TMP_"$n_te".nii.gz
 				if [[ "$ApplyN4Bias" -eq 1 ]]; then
 					fslmaths "$WDIR"/TMP_"$n_te".nii.gz -div "$WDIR"/Bias_field_"$s"_"$r".nii.gz "$WDIR"/TMP_"$n_te".nii.gz # apply correction;
 				fi
@@ -117,6 +183,7 @@ for s in $sessions ; do
 		# Combine and average across echoes.
 		fslmerge -t "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/SBref.nii.gz "$WDIR"/TMP_*.nii.gz ##> /dev/null 2>&1
 		fslmaths "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/SBref.nii.gz -Tmean "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/SBref.nii.gz
+		reorient_to_std_inplace "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/SBref.nii.gz
 		cp "$Subdir"/func/"$FuncDirName"/session_"$s"/run_"$r"/SBref.nii.gz "$WDIR"/SBref_"$s"_"$r".nii.gz
 		rm "$WDIR"/TMP* # remove helper files
 
@@ -133,15 +200,16 @@ images=("$WDIR"/SBref_*.nii.gz)
 if [ "${#images[@]}" \> 1 ]; then
 
 	# Align and average the single-band reference (SBref) images.
-	"$MEDIR"/res0urces/FuncAverage -n -o "$Subdir"/func/xfms/rest/AvgSBref.nii.gz \
+	"$MEDIR"/res0urces/FuncAverage -n -o "$XfmsDir"/AvgSBref.nii.gz \
 	"$WDIR"/SBref_*.nii.gz ##> /dev/null 2>&1 
 
 else
 
 	# copy over the lone single-band reference (SBref) image;
-	cp "${images[0]}" "$Subdir"/func/xfms/rest/AvgSBref.nii.gz #> /dev/null 2>&1
+	cp "${images[0]}" "$XfmsDir"/AvgSBref.nii.gz #> /dev/null 2>&1
 
 fi
+reorient_to_std_inplace "$XfmsDir"/AvgSBref.nii.gz
 
 # Create a clean temporary copy of the FreeSurfer folder.
 rm -rf "$Subdir"/anat/T1w/freesurfer #> /dev/null 2>&1
@@ -219,36 +287,47 @@ else
 	echo "[INFO] Found existing white.deformed surfaces; skipping."
 fi
 
-# define the effective echo spacing;
-EchoSpacing=$(cat $Subdir/func/xfms/rest/EffectiveEchoSpacing.txt) 
 AvgPEDIR=$(find "$Subdir"/func/"$FuncDirName" -type f -name PE.txt | sort | head -n 1 | xargs cat 2>/dev/null)
 if [ -z "$AvgPEDIR" ]; then
 	AvgPEDIR=${EPIREG_PEDIR:--y}
 fi
 
-# register average SBref image to T1-weighted anatomical image using FSL's EpiReg (correct for spatial distortions using average field map); 
-"$MEDIR"/res0urces/epi_reg_dof --dof="$DOF" --epi="$Subdir"/func/xfms/rest/AvgSBref.nii.gz --t1="$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg --fmap="$Subdir"/func/field_maps/Avg_FM_rads_acpc.nii.gz --fmapmag="$Subdir"/func/field_maps/Avg_FM_mag_acpc.nii.gz --fmapmagbrain="$Subdir"/func/field_maps/Avg_FM_mag_acpc_brain.nii.gz --echospacing="$EchoSpacing" --wmseg="$Subdir"/anat/T1w/"$Subject"/mri/white.nii.gz --nofmapreg --pedir="$AvgPEDIR" ##> /dev/null 2>&1
-applywarp --interp=spline --in="$Subdir"/func/xfms/rest/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg.nii.gz --warp="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg_warp.nii.gz
+# register average SBref image to T1-weighted anatomical image.
+if [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]]; then
+	"$MEDIR"/res0urces/epi_reg_dof --dof="$DOF" --epi="$XfmsDir"/AvgSBref.nii.gz --t1="$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$XfmsDir"/AvgSBref2acpc_EpiReg --wmseg="$WMSEG_NII" ##> /dev/null 2>&1
+	convertwarp --ref="$AtlasTemplate" --premat="$XfmsDir"/AvgSBref2acpc_EpiReg.mat --out="$XfmsDir"/AvgSBref2acpc_EpiReg_warp.nii.gz
+else
+	[[ -f "$XfmsDir"/EffectiveEchoSpacing.txt ]] || {
+		echo "ERROR: missing func/xfms/${FuncXfmsDir}/EffectiveEchoSpacing.txt. Re-run validation/import so JSON metadata are available." >&2
+		exit 1
+	}
+	EchoSpacing=$(cat "$XfmsDir"/EffectiveEchoSpacing.txt)
+	"$MEDIR"/res0urces/epi_reg_dof --dof="$DOF" --epi="$XfmsDir"/AvgSBref.nii.gz --t1="$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$XfmsDir"/AvgSBref2acpc_EpiReg --fmap="$FM_DIR"/Avg_FM_rads_acpc.nii.gz --fmapmag="$FM_DIR"/Avg_FM_mag_acpc.nii.gz --fmapmagbrain="$FM_DIR"/Avg_FM_mag_acpc_brain.nii.gz --echospacing="$EchoSpacing" --wmseg="$WMSEG_NII" --nofmapreg --pedir="$AvgPEDIR" ##> /dev/null 2>&1
+fi
+applywarp --interp=spline --in="$XfmsDir"/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$XfmsDir"/AvgSBref2acpc_EpiReg.nii.gz --warp="$XfmsDir"/AvgSBref2acpc_EpiReg_warp.nii.gz
 
 # use BBRegister (BBR) to fine-tune the existing co-registration & output FSL style transformation matrix;
-bbregister --s freesurfer --mov "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg.nii.gz --init-reg "$MEDIR"/res0urces/eye.dat --surf white.deformed --bold --reg "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.dat --6 --o "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.nii.gz ##> /dev/null 2>&1 
-tkregister2 --s freesurfer --noedit --reg "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.dat --mov "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg.nii.gz --targ "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --fslregout "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.mat ##> /dev/null 2>&1 
+bbregister --s freesurfer --mov "$XfmsDir"/AvgSBref2acpc_EpiReg.nii.gz --init-reg "$MEDIR"/res0urces/eye.dat --surf white.deformed --bold --reg "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.dat --6 --o "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.nii.gz ##> /dev/null 2>&1 
+tkregister2 --s freesurfer --noedit --reg "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.dat --mov "$XfmsDir"/AvgSBref2acpc_EpiReg.nii.gz --targ "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --fslregout "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.mat ##> /dev/null 2>&1 
 
 # add BBR step as post warp linear transformation & generate inverse warp;
-convertwarp --warp1="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg_warp.nii.gz --postmat="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.mat --ref="$AtlasTemplate" --out="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz
-applywarp --interp=spline --in="$Subdir"/func/xfms/rest/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR.nii.gz --warp="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz
-invwarp --ref="$Subdir"/func/xfms/rest/AvgSBref.nii.gz -w "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz -o "$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_inv_warp.nii.gz # invert func --> T1w anatomical warp; includ. dc.;
+convertwarp --warp1="$XfmsDir"/AvgSBref2acpc_EpiReg_warp.nii.gz --postmat="$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.mat --ref="$AtlasTemplate" --out="$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz
+applywarp --interp=spline --in="$XfmsDir"/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.nii.gz --warp="$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz
+invwarp --ref="$XfmsDir"/AvgSBref.nii.gz -w "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz -o "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_inv_warp.nii.gz # invert func --> T1w anatomical warp; includ. dc.;
+convert_xfm -omat "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_full.mat \
+-concat "$XfmsDir"/AvgSBref2acpc_EpiReg+BBR.mat \
+"$XfmsDir"/AvgSBref2acpc_EpiReg.mat
 
 # combine warps (distorted SBref image --> T1w_acpc & anatomical image in acpc --> MNI atlas)
-convertwarp --ref="$AtlasTemplate" --warp1="$Subdir"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz --warp2="$Subdir"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz --out="$Subdir"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz
-applywarp --interp=spline --in="$Subdir"/func/xfms/rest/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$Subdir"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR.nii.gz --warp="$Subdir"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz
-invwarp -w "$Subdir"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz -o "$Subdir"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR_inv_warp.nii.gz --ref="$Subdir"/func/xfms/rest/AvgSBref.nii.gz # generate an inverse warp; atlas --> distorted SBref image 
+convertwarp --ref="$AtlasTemplate" --warp1="$XfmsDir"/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz --warp2="$Subdir"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz --out="$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz
+applywarp --interp=spline --in="$XfmsDir"/AvgSBref.nii.gz --ref="$AtlasTemplate" --out="$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR.nii.gz --warp="$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz
+invwarp -w "$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz -o "$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR_inv_warp.nii.gz --ref="$XfmsDir"/AvgSBref.nii.gz # generate an inverse warp; atlas --> distorted SBref image 
 
 # Also coregister individual SBrefs to the target anatomical image.
 # This supports comparison of the average field map and scan-specific field maps.
 
-# create & define the "CoregQA" folder;
-mkdir -p "$Subdir"/func/qa/CoregQA #> /dev/null 2>&1
+# create & define the task-specific CoregQA folder;
+mkdir -p "$COREG_QA_DIR" #> /dev/null 2>&1
 
 # count the number of sessions
 Sessions=("$Subdir"/func/"$FuncDirName"/session_*)
@@ -268,39 +347,39 @@ func () {
 		fi
 
 		# check to see if this scan has a field map or not;
-		if [ -f "$2/func/field_maps/AllFMs/FM_rads_acpc_S"$6"_R"$r".nii.gz" ]; then
+		if [ -f "$FM_DIR/AllFMs/FM_rads_acpc_S"$6"_R"$r".nii.gz" ]; then
 
 			# define the effective echo spacing;
 			EchoSpacing=$(cat "$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/EffectiveEchoSpacing.txt)
 		
 			# register average SBref image to T1-weighted anatomical image using FSL's EpiReg (correct for spatial distortions using scan-specific field map); 
-			"$1"/res0urces/epi_reg_dof --dof="$4" --epi="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --t1="$2"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$2"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r" --fmap="$2"/func/field_maps/AllFMs/FM_rads_acpc_S"$6"_R"$r".nii.gz --fmapmag="$2"/func/field_maps/AllFMs/FM_mag_acpc_S"$6"_R"$r".nii.gz --fmapmagbrain="$2"/func/field_maps/AllFMs/FM_mag_acpc_brain_S"$6"_R"$r".nii.gz --echospacing="$EchoSpacing" --wmseg="$2"/anat/T1w/"$3"/mri/white.nii.gz --nofmapreg --pedir="$RunPEDIR" ##> /dev/null 2>&1
-			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r"_warp.nii.gz
+			"$1"/res0urces/epi_reg_dof --dof="$4" --epi="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --t1="$2"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$2"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r" --fmap="$FM_DIR"/AllFMs/FM_rads_acpc_S"$6"_R"$r".nii.gz --fmapmag="$FM_DIR"/AllFMs/FM_mag_acpc_S"$6"_R"$r".nii.gz --fmapmagbrain="$FM_DIR"/AllFMs/FM_mag_acpc_brain_S"$6"_R"$r".nii.gz --echospacing="$EchoSpacing" --wmseg="$WMSEG_NII" --nofmapreg --pedir="$RunPEDIR" ##> /dev/null 2>&1
+			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r"_warp.nii.gz
 
 			# Use BBRegister (BBR) to refine the existing coregistration and write an FSL-style transform.
-			bbregister --s freesurfer --mov "$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --init-reg "$1"/res0urces/eye.dat --surf white.deformed --bold --reg "$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".dat --6 --o "$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz ##> /dev/null 2>&1 
-			tkregister2 --s freesurfer --noedit --reg "$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".dat --mov "$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --targ "$2"/anat/T1w/T1w_acpc_dc_restore.nii.gz --fslregout "$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".mat ##> /dev/null 2>&1 
+			bbregister --s freesurfer --mov "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --init-reg "$1"/res0urces/eye.dat --surf white.deformed --bold --reg "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".dat --6 --o "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz ##> /dev/null 2>&1 
+			tkregister2 --s freesurfer --noedit --reg "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".dat --mov "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r".nii.gz --targ "$2"/anat/T1w/T1w_acpc_dc_restore.nii.gz --fslregout "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".mat ##> /dev/null 2>&1 
 
 			# add BBR step as post warp linear transformation & generate inverse warp;
-			convertwarp --warp1="$2"/func/xfms/rest/SBref2acpc_EpiReg_S"$6"_R"$r"_warp.nii.gz --postmat="$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".mat --ref="$5" --out="$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
-			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
-			mv "$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz "$2"/func/qa/CoregQA/SBref2acpc_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz
+			convertwarp --warp1="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg_S"$6"_R"$r"_warp.nii.gz --postmat="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".mat --ref="$5" --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
+			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
+			mv "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz "$COREG_QA_DIR"/SBref2acpc_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz
 			
 			# warp SBref image into MNI atlas volume space in a single spline warp; can be used for CoregQA
-			convertwarp --ref="$5" --warp1="$2"/func/xfms/rest/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz --warp2="$2"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz --out="$2"/func/xfms/rest/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
-			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/qa/CoregQA/SBref2nonlin_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/rest/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
+			convertwarp --ref="$5" --warp1="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz --warp2="$2"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
+			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$COREG_QA_DIR"/SBref2nonlin_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/"$FuncXfmsDir"/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
 
 		fi
 
         # repeat warps (ACPC, MNI) but this time with the native --> acpc co-registration using an average field map;
-        flirt -dof "$4" -in "$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz -ref "$2"/func/xfms/rest/AvgSBref.nii.gz -out "$2"/func/qa/CoregQA/SBref2AvgSBref_S"$6"_R"$r".nii.gz -omat "$2"/func/qa/CoregQA/SBref2AvgSBref_S"$6"_R"$r".mat
-        applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --premat="$2"/func/qa/CoregQA/SBref2AvgSBref_S"$6"_R"$r".mat --warp="$2"/func/xfms/rest/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz --out="$2"/func/qa/CoregQA/SBref2acpc_EpiReg+BBR_AvgFM_S"$6"_R"$r".nii.gz --ref="$5"
-        applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --premat="$2"/func/qa/CoregQA/SBref2AvgSBref_S"$6"_R"$r".mat --warp="$2"/func/xfms/rest/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz --out="$2"/func/qa/CoregQA/SBref2nonlin_EpiReg+BBR_AvgFM_S"$6"_R"$r".nii.gz --ref="$5"
+        flirt -dof "$4" -in "$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz -ref "$2"/func/xfms/"$FuncXfmsDir"/AvgSBref.nii.gz -out "$COREG_QA_DIR"/SBref2AvgSBref_S"$6"_R"$r".nii.gz -omat "$COREG_QA_DIR"/SBref2AvgSBref_S"$6"_R"$r".mat
+        applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --premat="$COREG_QA_DIR"/SBref2AvgSBref_S"$6"_R"$r".mat --warp="$2"/func/xfms/"$FuncXfmsDir"/AvgSBref2acpc_EpiReg+BBR_warp.nii.gz --out="$COREG_QA_DIR"/SBref2acpc_EpiReg+BBR_AvgFM_S"$6"_R"$r".nii.gz --ref="$5"
+        applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --premat="$COREG_QA_DIR"/SBref2AvgSBref_S"$6"_R"$r".mat --warp="$2"/func/xfms/"$FuncXfmsDir"/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz --out="$COREG_QA_DIR"/SBref2nonlin_EpiReg+BBR_AvgFM_S"$6"_R"$r".nii.gz --ref="$5"
 
 	done
 }
 
-export FuncDirName
+export FuncDirName FuncXfmsDir WMSEG_NII FM_DIR COREG_QA_DIR
 export -f func # also coregister individual SBrefs to the target anatomical image
 parallel --jobs $NTHREADS func ::: $MEDIR ::: $Subdir ::: $Subject ::: $DOF ::: $AtlasTemplate ::: $Sessions ::: "$AvgPEDIR" ##> /dev/null 2>&1  
 
@@ -308,13 +387,23 @@ parallel --jobs $NTHREADS func ::: $MEDIR ::: $Subdir ::: $Subject ::: $DOF ::: 
 # (brain mask and subcortical mask in functional space)
 
 # T2w anatomicals (whole brain & brain extracted in Atlas Template space)
-flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T2w_acpc_dc_restore.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T2w_acpc_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
-flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T2w_acpc_dc_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T2w_acpc_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+if [ -f "$Subdir"/anat/T1w/T2w_acpc_dc_restore.nii.gz ]; then
+	flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T2w_acpc_dc_restore.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T2w_acpc_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+else
+	echo "[INFO] Skipping T2w functional-grid resample; missing $Subdir/anat/T1w/T2w_acpc_dc_restore.nii.gz"
+	rm -f "$XfmsDir"/T2w_acpc_func.nii.gz
+fi
+if [ -f "$Subdir"/anat/T1w/T2w_acpc_dc_restore_brain.nii.gz ]; then
+	flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T2w_acpc_dc_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T2w_acpc_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+else
+	echo "[INFO] Skipping T2w brain functional-grid resample; missing $Subdir/anat/T1w/T2w_acpc_dc_restore_brain.nii.gz"
+	rm -f "$XfmsDir"/T2w_acpc_brain_func.nii.gz
+fi
 
 # T1w anatomicals (whole brain & brain extracted in Atlas Template space)
-flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T1w_acpc_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
-flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T1w_acpc_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
-fslmaths "$Subdir"/func/xfms/rest/T1w_acpc_brain_func.nii.gz -bin "$Subdir"/func/xfms/rest/T1w_acpc_brain_func_mask.nii.gz
+flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T1w_acpc_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+flirt -interp nearestneighbour -in "$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T1w_acpc_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+fslmaths "$XfmsDir"/T1w_acpc_brain_func.nii.gz -bin "$XfmsDir"/T1w_acpc_brain_func_mask.nii.gz
 
 # Resample high-quality cortical ribbon mask into functional atlas grid.
 # Expected source: anat/T1w/CorticalRibbon.nii.gz (fallback to .ni.gz typo if present).
@@ -327,9 +416,9 @@ if [ ! -f "$CorticalRibbonSrc" ]; then
 	AutoRhRibbon="$Subdir"/anat/T1w/"$Subject"/mri/rh.ribbon.mgz
 	if [ -f "$AutoLhRibbon" ] && [ -f "$AutoRhRibbon" ]; then
 		echo "[WARN] CorticalRibbon.nii.gz missing; auto-building from FreeSurfer lh/rh.ribbon.mgz"
-		TmpLhRibbon="$Subdir"/func/xfms/rest/.tmp_lh.ribbon.nii.gz
-		TmpRhRibbon="$Subdir"/func/xfms/rest/.tmp_rh.ribbon.nii.gz
-		CorticalRibbonSrc="$Subdir"/func/xfms/rest/.tmp_CorticalRibbon_auto.nii.gz
+		TmpLhRibbon="$XfmsDir"/.tmp_lh.ribbon.nii.gz
+		TmpRhRibbon="$XfmsDir"/.tmp_rh.ribbon.nii.gz
+		CorticalRibbonSrc="$XfmsDir"/.tmp_CorticalRibbon_auto.nii.gz
 		mri_convert -i "$AutoLhRibbon" -o "$TmpLhRibbon" --like "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz
 		mri_convert -i "$AutoRhRibbon" -o "$TmpRhRibbon" --like "$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz
 		fslmaths "$TmpLhRibbon" -add "$TmpRhRibbon" "$CorticalRibbonSrc"
@@ -341,34 +430,34 @@ if [ ! -f "$CorticalRibbonSrc" ]; then
 	fi
 fi
 # T1w/ACPC functional-grid ribbon (legacy/default path).
-flirt -interp nearestneighbour -in "$CorticalRibbonSrc" -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/CorticalRibbon_acpc_func_mask.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
-fslmaths "$Subdir"/func/xfms/rest/CorticalRibbon_acpc_func_mask.nii.gz -bin "$Subdir"/func/xfms/rest/CorticalRibbon_acpc_func_mask.nii.gz
+flirt -interp nearestneighbour -in "$CorticalRibbonSrc" -ref "$AtlasTemplate" -out "$XfmsDir"/CorticalRibbon_acpc_func_mask.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+fslmaths "$XfmsDir"/CorticalRibbon_acpc_func_mask.nii.gz -bin "$XfmsDir"/CorticalRibbon_acpc_func_mask.nii.gz
 
 # MNINonlinear functional-grid ribbon (uses nonlinear ACPC->standard warp).
 NonlinWarp="$Subdir"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz
 if [ -f "$NonlinWarp" ]; then
-	applywarp --interp=nn --in="$CorticalRibbonSrc" --ref="$AtlasTemplate" --warp="$NonlinWarp" --out="$Subdir"/func/xfms/rest/CorticalRibbon_nonlin_func_mask.nii.gz
-	fslmaths "$Subdir"/func/xfms/rest/CorticalRibbon_nonlin_func_mask.nii.gz -bin "$Subdir"/func/xfms/rest/CorticalRibbon_nonlin_func_mask.nii.gz
+	applywarp --interp=nn --in="$CorticalRibbonSrc" --ref="$AtlasTemplate" --warp="$NonlinWarp" --out="$XfmsDir"/CorticalRibbon_nonlin_func_mask.nii.gz
+	fslmaths "$XfmsDir"/CorticalRibbon_nonlin_func_mask.nii.gz -bin "$XfmsDir"/CorticalRibbon_nonlin_func_mask.nii.gz
 elif [[ "$AtlasSpace" == "MNINonlinear" ]]; then
 	echo "ERROR: missing nonlinear warp required for AtlasSpace=MNINonlinear: $NonlinWarp"
 	exit 2
 else
 	echo "[INFO] Nonlinear ribbon mask skipped (missing warp: $NonlinWarp)"
 fi
-rm -f "$Subdir"/func/xfms/rest/.tmp_CorticalRibbon_auto.nii.gz
+rm -f "$XfmsDir"/.tmp_CorticalRibbon_auto.nii.gz
 
 # MNINonlinear anatomicals (whole brain & brain extracted in Atlas Template space)
 if [ -f "$Subdir"/anat/MNINonLinear/T2w_restore.nii.gz ]; then
-	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T2w_restore.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T2w_nonlin_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T2w_restore.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T2w_nonlin_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
 fi
 if [ -f "$Subdir"/anat/MNINonLinear/T2w_restore_brain.nii.gz ]; then
-	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T2w_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T2w_nonlin_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T2w_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T2w_nonlin_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
 fi
 if [ -f "$Subdir"/anat/MNINonLinear/T1w_restore.nii.gz ]; then
-	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T1w_restore.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T1w_nonlin_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+	flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T1w_restore.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T1w_nonlin_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
 fi
-flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T1w_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$Subdir"/func/xfms/rest/T1w_nonlin_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
-fslmaths "$Subdir"/func/xfms/rest/T1w_nonlin_brain_func.nii.gz -bin "$Subdir"/func/xfms/rest/T1w_nonlin_brain_func_mask.nii.gz
+flirt -interp nearestneighbour -in "$Subdir"/anat/MNINonLinear/T1w_restore_brain.nii.gz -ref "$AtlasTemplate" -out "$XfmsDir"/T1w_nonlin_brain_func.nii.gz -applyxfm -init "$MEDIR"/res0urces/ident.mat
+fslmaths "$XfmsDir"/T1w_nonlin_brain_func.nii.gz -bin "$XfmsDir"/T1w_nonlin_brain_func_mask.nii.gz
 
 # Write run-level intermediate target and warp pointers in shell/Python-friendly text files.
 # these are consumed by headmotion module.
@@ -391,20 +480,22 @@ else
 	PointerWarpSpace="acpc"
 fi
 
-PointerLog="$Subdir/func/qa/CoregQA/CoregPointerSelection.tsv"
+PointerLog="$COREG_QA_DIR/CoregPointerSelection.tsv"
 echo -e "session\trun\trho_avgfm\trho_scan_specific\tselection" > "$PointerLog"
 
 for s in $Sessions ; do
 	runs=("$Subdir"/func/"$FuncDirName"/session_"$s"/run_*)
 	runs=$(seq 1 1 "${#runs[@]}")
 	for r in $runs ; do
-		AvgWarp="$Subdir/func/xfms/rest/AvgSBref2${PointerWarpSpace}_EpiReg+BBR_warp.nii.gz"
-		ScanWarp="$Subdir/func/xfms/rest/SBref2${PointerWarpSpace}_EpiReg+BBR_S${s}_R${r}_warp.nii.gz"
+		AvgWarp="$Subdir/func/xfms/${FuncXfmsDir}/AvgSBref2${PointerWarpSpace}_EpiReg+BBR_warp.nii.gz"
+		ScanWarp="$Subdir/func/xfms/${FuncXfmsDir}/SBref2${PointerWarpSpace}_EpiReg+BBR_S${s}_R${r}_warp.nii.gz"
 		RunSBref="$Subdir/func/$FuncDirName/session_${s}/run_${r}/SBref.nii.gz"
-		AvgSBref="$Subdir/func/xfms/rest/AvgSBref.nii.gz"
+		AvgSBref="$Subdir/func/xfms/${FuncXfmsDir}/AvgSBref.nii.gz"
 		TargetTxt="$Subdir/func/$FuncDirName/session_${s}/run_${r}/IntermediateCoregTarget.txt"
 		WarpTxt="$Subdir/func/$FuncDirName/session_${s}/run_${r}/Intermediate2ACPCWarp.txt"
+		MatTxt="$Subdir/func/$FuncDirName/session_${s}/run_${r}/Intermediate2ACPCMat.txt"
 
+		rm -f "$MatTxt"
 		if [[ "$ScanSpecificFM" == "1" && -f "$ScanWarp" ]]; then
 			echo "$RunSBref" > "$TargetTxt"
 			echo "$ScanWarp" > "$WarpTxt"
@@ -412,6 +503,9 @@ for s in $Sessions ; do
 		else
 			echo "$AvgSBref" > "$TargetTxt"
 			echo "$AvgWarp" > "$WarpTxt"
+			if [[ "${FUNC_NOFIELDMAP_MODE:-0}" == "1" ]]; then
+				echo "$Subdir/func/xfms/${FuncXfmsDir}/AvgSBref2acpc_EpiReg+BBR_full.mat" > "$MatTxt"
+			fi
 			echo -e "${s}\t${r}\tnan\tnan\tavgfm" >> "$PointerLog"
 		fi
 	done

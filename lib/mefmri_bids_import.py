@@ -5,9 +5,9 @@ Expected output layout:
   <out_subject>/
     anat/unprocessed/T1w/T1w_*.nii.gz
     anat/unprocessed/T2w/T2w_*.nii.gz
-    func/unprocessed/<func_dirname>/session_<S>/run_<R>/Rest_S<S>_R<R>_E<E>.nii.gz(+json)
-    func/unprocessed/field_maps/AP_S<S>_R<R>.nii.gz(+json)
-    func/unprocessed/field_maps/PA_S<S>_R<R>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/session_<S>/run_<R>/<prefix>_S<S>_R<R>_E<E>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/field_maps/AP_S<S>_R<R>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/field_maps/PA_S<S>_R<R>.nii.gz(+json)
 """
 
 from __future__ import annotations
@@ -255,6 +255,22 @@ def infer_run_from_intended_for(intended_for: List[str]) -> Optional[str]:
     return None
 
 
+def fmap_intended_for_task(json_path: Path, task: str) -> bool:
+    if not json_path.exists():
+        return True
+    try:
+        meta = json.loads(json_path.read_text())
+    except Exception:
+        return True
+    intended = meta.get("IntendedFor", [])
+    if isinstance(intended, str):
+        intended = [intended]
+    if not isinstance(intended, list) or not intended:
+        return True
+    task_re = re.compile(rf"(^|[_/])task-{re.escape(task)}([_/]|$)")
+    return any(task_re.search(str(item)) for item in intended)
+
+
 def parse_nifti_volumes(path: Path) -> int:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rb") as fh:
@@ -298,6 +314,7 @@ def import_fmaps(
     mode: str,
     overwrite: bool,
     task: str,
+    func_dirname: str,
     warnings: List[str],
 ) -> Tuple[int, int]:
     # Build minimal session/run mapping from destination func folders if they exist.
@@ -310,7 +327,7 @@ def import_fmaps(
 
     ap_count = 0
     pa_count = 0
-    out_fm = out_subject_dir / "func" / "unprocessed" / "field_maps"
+    out_fm = out_subject_dir / "func" / "unprocessed" / func_dirname / "field_maps"
     out_fm.mkdir(parents=True, exist_ok=True)
 
     # Group by BIDS ses/run labels for epi fieldmaps with dir entity.
@@ -321,6 +338,10 @@ def import_fmaps(
     for f in fmap_files:
         entities, suffix = parse_entities(f)
         if suffix != "epi":
+            continue
+        js = sidecar_json_for_nii(f)
+        if not fmap_intended_for_task(js, task):
+            warnings.append(f"Skipping fmap not intended for task-{task}: {f}")
             continue
         dir_label = entities.get("dir", "").lower()
         if dir_label.startswith("ap"):
@@ -334,7 +355,6 @@ def import_fmaps(
         ses_lbl = entities.get("ses", "1")
         run_lbl = entities.get("run")
         if run_lbl is None:
-            js = sidecar_json_for_nii(f)
             if js.exists():
                 try:
                     meta = json.loads(js.read_text())
@@ -430,6 +450,7 @@ def main() -> int:
             args.mode,
             args.overwrite,
             args.task,
+            args.func_dirname,
             warnings,
         )
     except ImportErrorAbort as exc:
@@ -457,4 +478,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

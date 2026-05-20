@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Strict raw DICOM intake helper for RevisedMe-fMRIPipeline."""
+"""Strict raw DICOM intake helper for RevisedMe-fMRIPipeline.
+
+The importer writes functional runs and field maps into the selected task
+folder under func/unprocessed/<FUNC_DIRNAME>/.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ class ProtocolConfig:
     dcm2niix_bin: str
     func_dirname: str
     func_file_prefix: str
-    expect_rest_runs_per_session: int
+    expect_task_runs_per_session: int
     expect_echoes_per_run: int
     expect_sbref_per_run: int
     expect_fmap_ap_per_session: int
@@ -37,11 +41,11 @@ class ProtocolConfig:
     expect_t2w_max_per_import: int
     require_t1w_if_subject_missing: bool
     t2w_optional: bool
-    expect_rest_volumes: int
+    expect_task_volumes: int
     expect_sbref_volumes: int
     expect_fmap_volumes: int
     expect_anat_volumes: int
-    min_bytes_rest: int
+    min_bytes_task: int
     min_bytes_sbref: int
     min_bytes_fmap: int
     min_bytes_t1w: int
@@ -49,7 +53,7 @@ class ProtocolConfig:
     echo_dim4_policy: str
     t1w_regex: str
     t2w_regex: str
-    rest_regex: str
+    task_regex: str
     sbref_regex: str
     fmap_ap_regex: str
     fmap_pa_regex: str
@@ -70,7 +74,7 @@ class ProtocolConfig:
             dcm2niix_bin=os.environ.get("IMPORT_DCM2NIIX_BIN", "dcm2niix"),
             func_dirname=os.environ.get("FUNC_DIRNAME", "rest"),
             func_file_prefix=os.environ.get("FUNC_FILE_PREFIX", "Rest"),
-            expect_rest_runs_per_session=env_int("IMPORT_EXPECT_REST_RUNS_PER_SESSION"),
+            expect_task_runs_per_session=env_int("IMPORT_EXPECT_TASK_RUNS_PER_SESSION", env_int("IMPORT_EXPECT_REST_RUNS_PER_SESSION")),
             expect_echoes_per_run=env_int("IMPORT_EXPECT_ECHOES_PER_RUN"),
             expect_sbref_per_run=env_int("IMPORT_EXPECT_SBREF_PER_RUN"),
             expect_fmap_ap_per_session=env_int("IMPORT_EXPECT_FMAP_AP_PER_SESSION"),
@@ -79,11 +83,11 @@ class ProtocolConfig:
             expect_t2w_max_per_import=env_int("IMPORT_EXPECT_T2W_MAX_PER_IMPORT"),
             require_t1w_if_subject_missing=env_bool("IMPORT_REQUIRE_T1W_IF_SUBJECT_MISSING"),
             t2w_optional=env_bool("IMPORT_T2W_OPTIONAL", 1),
-            expect_rest_volumes=env_int("IMPORT_EXPECT_REST_VOLUMES"),
+            expect_task_volumes=env_int("IMPORT_EXPECT_TASK_VOLUMES", env_int("IMPORT_EXPECT_REST_VOLUMES")),
             expect_sbref_volumes=env_int("IMPORT_EXPECT_SBREF_VOLUMES"),
             expect_fmap_volumes=env_int("IMPORT_EXPECT_FMAP_VOLUMES"),
             expect_anat_volumes=env_int("IMPORT_EXPECT_ANAT_VOLUMES"),
-            min_bytes_rest=env_int("IMPORT_MIN_BYTES_REST"),
+            min_bytes_task=env_int("IMPORT_MIN_BYTES_TASK", env_int("IMPORT_MIN_BYTES_REST")),
             min_bytes_sbref=env_int("IMPORT_MIN_BYTES_SBREF"),
             min_bytes_fmap=env_int("IMPORT_MIN_BYTES_FMAP"),
             min_bytes_t1w=env_int("IMPORT_MIN_BYTES_T1W"),
@@ -91,7 +95,7 @@ class ProtocolConfig:
             echo_dim4_policy=os.environ.get("IMPORT_ECHO_DIM4_POLICY", "abort"),
             t1w_regex=os.environ.get("IMPORT_T1W_REGEX", ""),
             t2w_regex=os.environ.get("IMPORT_T2W_REGEX", ""),
-            rest_regex=os.environ.get("IMPORT_REST_REGEX", ""),
+            task_regex=os.environ.get("IMPORT_TASK_REGEX", os.environ.get("IMPORT_REST_REGEX", "")),
             sbref_regex=os.environ.get("IMPORT_SBREF_REGEX", ""),
             fmap_ap_regex=os.environ.get("IMPORT_FMAP_AP_REGEX", ""),
             fmap_pa_regex=os.environ.get("IMPORT_FMAP_PA_REGEX", ""),
@@ -248,14 +252,22 @@ def classify_record(record: SeriesRecord, cfg: ProtocolConfig) -> Tuple[str, str
         return "t1w", "matched T1w regex"
     if re.search(cfg.t2w_regex, desc):
         return "t2w", "matched T2w regex"
+    # Some scanner exports use generic or even inconsistent AP/PA descriptions.
+    # For spin-echo fieldmaps, prefer the phase-encoding direction when it is available.
+    if desc.startswith("SpinEchoFieldMap_"):
+        ped = record.phase_encoding_direction
+        if ped == "j-":
+            return "fmap_ap", "generic fieldmap classified via PhaseEncodingDirection=j-"
+        if ped == "j":
+            return "fmap_pa", "generic fieldmap classified via PhaseEncodingDirection=j"
     if re.search(cfg.fmap_ap_regex, desc):
         return "fmap_ap", "matched AP fieldmap regex"
     if re.search(cfg.fmap_pa_regex, desc):
         return "fmap_pa", "matched PA fieldmap regex"
     if re.search(cfg.sbref_regex, desc):
         return "sbref", "matched SBref regex"
-    if re.search(cfg.rest_regex, desc):
-        return "rest", "matched rest regex"
+    if re.search(cfg.task_regex, desc):
+        return "task", "matched task regex"
     return "unknown", "no classification rule matched"
 
 
@@ -293,6 +305,48 @@ def validate_singletons(records: Sequence[SeriesRecord], expected_max: int, role
 def validate_record_guardrails(record: SeriesRecord, min_bytes: int, expect_vols: int, role_name: str) -> None:
     ensure(record.file_size >= min_bytes, f"{role_name} file too small: {record.nii_path} ({record.file_size} bytes < {min_bytes})")
     ensure(record.n_volumes == expect_vols, f"{role_name} expected {expect_vols} volume(s), found {record.n_volumes}: {record.nii_path}")
+
+
+def prune_extra_fieldmaps(records: Sequence[SeriesRecord], expected_count: int, role_name: str, reporter: Reporter) -> List[SeriesRecord]:
+    kept = list(records)
+    if expected_count < 0:
+        raise ImportAbort(f"{role_name} expected count must be >= 0, got {expected_count}")
+    if len(kept) <= expected_count:
+        return kept
+    if expected_count == 0:
+        details = "; ".join(summarize_record(r) for r in kept)
+        raise ImportAbort(f"Unexpected {role_name} fieldmaps detected: {details}")
+
+    if any(r.filecount_images is None for r in kept):
+        details = "; ".join(summarize_record(r) for r in kept)
+        raise ImportAbort(f"Expected {expected_count} {role_name} fieldmaps, found {len(kept)} and cannot disambiguate extras without FILECOUNT2.txt: {details}")
+
+    ranked = sorted(
+        kept,
+        key=lambda r: (
+            int(r.filecount_images or 0),
+            int(r.file_size),
+            r.acquisition_time,
+            -int(r.series_number),
+        ),
+        reverse=True,
+    )
+    cutoff = int(ranked[expected_count - 1].filecount_images or 0)
+    next_count = int(ranked[expected_count].filecount_images or 0)
+    if cutoff <= next_count:
+        details = "; ".join(summarize_record(r) for r in ranked)
+        raise ImportAbort(f"Expected {expected_count} {role_name} fieldmaps, found {len(ranked)} with no clearly incomplete extra series: {details}")
+
+    kept = ranked[:expected_count]
+    ignored = ranked[expected_count:]
+    for rec in ignored:
+        reporter.log(
+            f"[classify] IGNORED   {summarize_record(rec)} "
+            f"reason=extra {role_name} fieldmap ignored because FILECOUNT2 indicates fewer DICOM images than retained series"
+        )
+        rec.classification = "ignored"
+        rec.classification_reason = f"extra {role_name} fieldmap ignored due to lower FILECOUNT2 image count"
+    return sorted(kept, key=lambda r: (r.series_number, r.acquisition_time, r.basename))
 
 
 def group_multi_echo(
@@ -499,7 +553,7 @@ def main() -> int:
         fmap_ap_records = [r for r in records if r.classification == "fmap_ap"]
         fmap_pa_records = [r for r in records if r.classification == "fmap_pa"]
         sbref_records = [r for r in records if r.classification == "sbref"]
-        rest_records = [r for r in records if r.classification == "rest"]
+        task_records = [r for r in records if r.classification == "task"]
 
         validate_singletons(t1w_records, cfg.expect_t1w_max_per_import, "T1w")
         validate_singletons(t2w_records, cfg.expect_t2w_max_per_import, "T2w")
@@ -512,6 +566,8 @@ def main() -> int:
             existing_t1w = existing_anat_count(subject_dir, "T1w")
             ensure(existing_t1w > 0 or len(t1w_records) >= 1, "Session 1 import requires at least one T1w anatomical")
 
+        fmap_ap_records = prune_extra_fieldmaps(fmap_ap_records, cfg.expect_fmap_ap_per_session, "AP", reporter)
+        fmap_pa_records = prune_extra_fieldmaps(fmap_pa_records, cfg.expect_fmap_pa_per_session, "PA", reporter)
         ensure(len(fmap_ap_records) == cfg.expect_fmap_ap_per_session, f"Expected {cfg.expect_fmap_ap_per_session} AP fieldmaps, found {len(fmap_ap_records)}")
         ensure(len(fmap_pa_records) == cfg.expect_fmap_pa_per_session, f"Expected {cfg.expect_fmap_pa_per_session} PA fieldmaps, found {len(fmap_pa_records)}")
         for rec in fmap_ap_records + fmap_pa_records:
@@ -519,16 +575,16 @@ def main() -> int:
 
         ensure(cfg.echo_dim4_policy in {"abort", "truncate_to_min"}, f"IMPORT_ECHO_DIM4_POLICY must be abort|truncate_to_min, got: {cfg.echo_dim4_policy}")
 
-        rest_groups = group_multi_echo(rest_records, cfg.expect_echoes_per_run, cfg.expect_rest_volumes, cfg.min_bytes_rest, "Rest", cfg.echo_dim4_policy)
+        task_groups = group_multi_echo(task_records, cfg.expect_echoes_per_run, cfg.expect_task_volumes, cfg.min_bytes_task, cfg.func_file_prefix, cfg.echo_dim4_policy)
         sbref_groups = group_multi_echo(sbref_records, cfg.expect_echoes_per_run, cfg.expect_sbref_volumes, cfg.min_bytes_sbref, "SBref", cfg.echo_dim4_policy)
 
-        ensure(len(rest_groups) == cfg.expect_rest_runs_per_session, f"Expected {cfg.expect_rest_runs_per_session} resting-state runs, found {len(rest_groups)}")
-        expected_sbref_groups = cfg.expect_rest_runs_per_session * cfg.expect_sbref_per_run
+        ensure(len(task_groups) == cfg.expect_task_runs_per_session, f"Expected {cfg.expect_task_runs_per_session} {cfg.func_dirname} runs, found {len(task_groups)}")
+        expected_sbref_groups = cfg.expect_task_runs_per_session * cfg.expect_sbref_per_run
         ensure(len(sbref_groups) == expected_sbref_groups, f"Expected {expected_sbref_groups} SBref groups, found {len(sbref_groups)}")
 
-        reporter.log(f"[validate] Rest groups: {len(rest_groups)}")
-        for idx, group in enumerate(rest_groups, start=1):
-            reporter.log(f"[validate]   Rest run {idx}: {format_group(group)}")
+        reporter.log(f"[validate] {cfg.func_dirname} groups: {len(task_groups)}")
+        for idx, group in enumerate(task_groups, start=1):
+            reporter.log(f"[validate]   {cfg.func_dirname} run {idx}: {format_group(group)}")
         reporter.log(f"[validate] SBref groups: {len(sbref_groups)}")
         for idx, group in enumerate(sbref_groups, start=1):
             reporter.log(f"[validate]   SBref run {idx}: {format_group(group)}")
@@ -565,25 +621,25 @@ def main() -> int:
             manifest_rows.append(("t2w", rec.series_number, rec.series_description, str(rec.nii_path), str(rec.json_path), str(dst_nii), rec.n_volumes, rec.file_size, rec.classification_reason))
 
         for idx, rec in enumerate(sorted(fmap_ap_records, key=lambda r: (r.series_number, r.acquisition_time)), start=1):
-            dst_nii = subject_dir / "func" / "unprocessed" / "field_maps" / f"AP_S{session}_R{idx}.nii.gz"
+            dst_nii = subject_dir / "func" / "unprocessed" / cfg.func_dirname / "field_maps" / f"AP_S{session}_R{idx}.nii.gz"
             dst_json = dst_nii.with_name(dst_nii.name[:-7] + ".json")
             copy_with_sidecar(rec.nii_path, rec.json_path, dst_nii, dst_json, args.dry_run, reporter, rec.target_n_volumes)
             manifest_rows.append(("fmap_ap", rec.series_number, rec.series_description, str(rec.nii_path), str(rec.json_path), str(dst_nii), rec.n_volumes, rec.file_size, rec.classification_reason))
 
         for idx, rec in enumerate(sorted(fmap_pa_records, key=lambda r: (r.series_number, r.acquisition_time)), start=1):
-            dst_nii = subject_dir / "func" / "unprocessed" / "field_maps" / f"PA_S{session}_R{idx}.nii.gz"
+            dst_nii = subject_dir / "func" / "unprocessed" / cfg.func_dirname / "field_maps" / f"PA_S{session}_R{idx}.nii.gz"
             dst_json = dst_nii.with_name(dst_nii.name[:-7] + ".json")
             copy_with_sidecar(rec.nii_path, rec.json_path, dst_nii, dst_json, args.dry_run, reporter, rec.target_n_volumes)
             manifest_rows.append(("fmap_pa", rec.series_number, rec.series_description, str(rec.nii_path), str(rec.json_path), str(dst_nii), rec.n_volumes, rec.file_size, rec.classification_reason))
 
-        for run_idx, group in enumerate(rest_groups, start=1):
+        for run_idx, group in enumerate(task_groups, start=1):
             run_dir = subject_dir / "func" / "unprocessed" / cfg.func_dirname / f"session_{session}" / f"run_{run_idx}"
             for rec in group:
                 echo = int(rec.echo_number or 0)
                 dst_nii = run_dir / f"{cfg.func_file_prefix}_S{session}_R{run_idx}_E{echo}.nii.gz"
                 dst_json = dst_nii.with_name(dst_nii.name[:-7] + ".json")
                 copy_with_sidecar(rec.nii_path, rec.json_path, dst_nii, dst_json, args.dry_run, reporter, rec.target_n_volumes)
-                manifest_rows.append(("rest", rec.series_number, rec.series_description, str(rec.nii_path), str(rec.json_path), str(dst_nii), rec.n_volumes, rec.file_size, rec.classification_reason))
+                manifest_rows.append(("task", rec.series_number, rec.series_description, str(rec.nii_path), str(rec.json_path), str(dst_nii), rec.n_volumes, rec.file_size, rec.classification_reason))
 
         for run_idx, group in enumerate(sbref_groups, start=1):
             run_dir = subject_dir / "func" / "unprocessed" / cfg.func_dirname / f"session_{session}" / f"run_{run_idx}"
