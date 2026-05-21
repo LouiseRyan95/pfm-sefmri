@@ -49,8 +49,6 @@ If you want to use a different local `pfm-nsi` checkout instead of the bundled o
 NSI_EXTERNAL_ROOT="/full/path/to/your/pfm-nsi"
 ```
 
-So yes, users can override the bundled release version with their own newer local copy whenever they want.
-
 ## PFM Strategies
 
 PFM supports two strategies through `PFM_STRATEGY`.
