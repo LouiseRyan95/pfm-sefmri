@@ -77,7 +77,7 @@ ensure_white_wmseg() {
 # Read the JSON sidecars for each scan and write the text files used later in preprocessing.
 
 "$COREG_PYTHON" "$MEDIR"/lib/find_epi_params.py \
---subdir "$Subdir" --func-name "$FuncDirName" --start-session "$StartSession" \
+--subdir "$Subdir" --func-name "$FuncDirName" --func-prefix "$FuncFilePrefix" --start-session "$StartSession" \
 $( [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]] && printf '%s' "--no-fieldmap-mode" )
 WMSEG_NII="$(ensure_white_wmseg)"
 SBREF_FALLBACK_SKIP_TRS="${SBREF_FALLBACK_SKIP_TRS:-10}"
@@ -301,6 +301,18 @@ else
 		echo "ERROR: missing func/xfms/${FuncXfmsDir}/EffectiveEchoSpacing.txt. Re-run validation/import so JSON metadata are available." >&2
 		exit 1
 	}
+	required_fmaps=(
+		"$FM_DIR/Avg_FM_rads_acpc.nii.gz"
+		"$FM_DIR/Avg_FM_mag_acpc.nii.gz"
+		"$FM_DIR/Avg_FM_mag_acpc_brain.nii.gz"
+	)
+	for fmap_file in "${required_fmaps[@]}"; do
+		[[ -f "$fmap_file" ]] || {
+			echo "ERROR: missing processed fieldmap: $fmap_file" >&2
+			echo "Re-run the fieldmaps module before coreg." >&2
+			exit 1
+		}
+	done
 	EchoSpacing=$(cat "$XfmsDir"/EffectiveEchoSpacing.txt)
 	"$MEDIR"/res0urces/epi_reg_dof --dof="$DOF" --epi="$XfmsDir"/AvgSBref.nii.gz --t1="$Subdir"/anat/T1w/T1w_acpc_dc_restore.nii.gz --t1brain="$Subdir"/anat/T1w/T1w_acpc_dc_restore_brain.nii.gz --out="$XfmsDir"/AvgSBref2acpc_EpiReg --fmap="$FM_DIR"/Avg_FM_rads_acpc.nii.gz --fmapmag="$FM_DIR"/Avg_FM_mag_acpc.nii.gz --fmapmagbrain="$FM_DIR"/Avg_FM_mag_acpc_brain.nii.gz --echospacing="$EchoSpacing" --wmseg="$WMSEG_NII" --nofmapreg --pedir="$AvgPEDIR" ##> /dev/null 2>&1
 fi

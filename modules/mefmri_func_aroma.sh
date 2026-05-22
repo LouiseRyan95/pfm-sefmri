@@ -16,7 +16,7 @@ FuncFilePrefix="${FUNC_FILE_PREFIX:-Rest}"
 FuncXfmsDir="${FUNC_XFMS_DIRNAME:-$FuncDirName}"
 AtlasSpace="${AtlasSpace:-T1w}"
 
-AROMA_ENV="${AROMA_ENV:-sefmri_env}"
+AROMA_ENV="${AROMA_ENV:-aroma}"
 AROMA_ACTIVATE_MODE="${AROMA_ACTIVATE_MODE:-conda_activate}" # conda_activate|conda_run|direct
 AROMA_PARALLEL_JOBS="${AROMA_PARALLEL_JOBS:-$NTHREADS}"
 AROMA_OUT_SUBDIR="${AROMA_OUT_SUBDIR:-Aroma}"
@@ -25,7 +25,8 @@ AROMA_PLOT_REPORTS="${AROMA_PLOT_REPORTS:-0}"
 AROMA_FEATURES_OUTPUT="${AROMA_FEATURES_OUTPUT:-1}"
 AROMA_CLEAN_TYPE="${AROMA_CLEAN_TYPE:-nonaggr}" # nonaggr|aggr
 AROMA_BIN_OVERRIDE="${AROMA_BIN_OVERRIDE:-}"
-AROMA_PYTHON="${AROMA_PYTHON:-${PIPELINE_PYTHON:-python3}}"
+AROMA_PYTHON="${AROMA_PYTHON:-python}"
+AROMA_SCREEN_PYTHON="${AROMA_SCREEN_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 AROMA_NSI_THRESHOLD="${AROMA_NSI_THRESHOLD:-0.05}"
 SINGLE_ECHO_ECHO_INDEX="${SINGLE_ECHO_ECHO_INDEX:-1}"
 PIPELINE_SOURCE_FUNC_TAG="${PIPELINE_SOURCE_FUNC_TAG:-E${SINGLE_ECHO_ECHO_INDEX}}"
@@ -83,7 +84,7 @@ resolve_aroma_bin() {
   # Prefer resolving via the activated environment PATH (covers pip installs that
   # add ICA_AROMA.py as an entrypoint script).
   local aroma_path=""
-  aroma_path="$(conda run -n "$AROMA_ENV" python -c 'import shutil; print(shutil.which("ICA_AROMA.py") or "")' 2>/dev/null || true)"
+  aroma_path="$(conda run -n "$AROMA_ENV" sh -c 'command -v ICA_AROMA.py || true' 2>/dev/null || true)"
   if [[ -n "$aroma_path" && -f "$aroma_path" ]]; then
     echo "$aroma_path"
     return 0
@@ -262,7 +263,7 @@ process_run() {
 
   map_qc_volume_to_cifti "$comp_nii" "$comp_cifti" "$tmpdir" "$(fslval "$comp_nii" dim4)"
 
-  "$AROMA_PYTHON" "$AROMA_SCREEN_PY" \
+  "$AROMA_SCREEN_PYTHON" "$AROMA_SCREEN_PY" \
     --aroma-dir "$out_dir" \
     --betas-cifti "$comp_cifti" \
     --priors-mat "$NETWORK_PRIORS_MAT" \

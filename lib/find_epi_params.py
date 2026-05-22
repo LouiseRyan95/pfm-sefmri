@@ -64,11 +64,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--subdir", required=True)
     ap.add_argument("--func-name", default="rest")
+    ap.add_argument("--func-prefix", default="Rest")
     ap.add_argument("--start-session", type=int, default=1)
     args = ap.parse_args()
 
     subdir = Path(args.subdir)
     func_name = args.func_name
+    func_prefix = args.func_prefix
     start_session = args.start_session
     in_root = subdir / "func" / "unprocessed" / func_name
     out_root = subdir / "func" / func_name
@@ -76,7 +78,14 @@ def main() -> None:
     xfms_dir = subdir / "func" / "xfms" / func_name
 
     if start_session == 1 and out_root.exists():
-        shutil.rmtree(out_root)
+        # Do not delete the whole task directory: fieldmaps now live under
+        # func/<task>/field_maps and are produced before coreg calls this helper.
+        for stale in out_root.glob("session_*"):
+            if stale.is_dir():
+                shutil.rmtree(stale)
+        avg_sbref = out_root / "AverageSBref"
+        if avg_sbref.exists():
+            shutil.rmtree(avg_sbref)
 
     sessions = sorted([p for p in in_root.glob("session_*") if p.is_dir()], key=lambda p: int(p.name.split("_")[1]))
     all_ees = []
@@ -96,9 +105,9 @@ def main() -> None:
             out_run = out_root / f"session_{s_idx}" / f"run_{r_idx}"
             out_run.mkdir(parents=True, exist_ok=True)
 
-            json_files = sorted(rdir.glob("Rest*.json"))
+            json_files = sorted(rdir.glob(f"{func_prefix}*.json"))
             if not json_files:
-                raise FileNotFoundError(f"No Rest*.json files in {rdir}")
+                raise FileNotFoundError(f"No {func_prefix}*.json files in {rdir}")
 
             te_vals = []
             last_j = None
@@ -158,7 +167,7 @@ def main() -> None:
         runs = sorted([p for p in sdir.glob("run_*") if p.is_dir()], key=lambda p: int(p.name.split("_")[1]))
         for rdir in runs:
             r_idx = int(rdir.name.split("_")[1])
-            nii_files = sorted(rdir.glob("Rest_S*_R*_E*.nii.gz"))
+            nii_files = sorted(rdir.glob(f"{func_prefix}_S*_R*_E*.nii.gz"))
             for e_idx, nf in enumerate(nii_files, start=1):
                 size_mb = nf.stat().st_size / 1e6
                 nvol = int(run(["fslnvols", str(nf)]))
