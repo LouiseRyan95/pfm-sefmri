@@ -12,6 +12,8 @@ Current release notes:
 - `MULTI_ECHO_DENOISE_METHOD="acompcor"` will generate OCME and run aCompCor on it instead of ME-ICA.
 - In `single_echo` mode, the pipeline uses `E1` as the source image and writes `*_E1+aCompCor`.
 - In `multi_echo` mode with `acompcor`, the pipeline uses `OCME` as the source image and writes `*_OCME+aCompCor`.
+- `START_FROM_MODULE` and `STOP_AFTER_MODULE` use `denoise` for the denoising stage; legacy `meica` is still accepted as an alias.
+- `MGTR_ENABLE="auto"` skips MGTR after aCompCor because aCompCor already includes the cortical-ribbon mean signal and derivative in its nuisance model. Set `MGTR_ENABLE=1` to force MGTR.
 - `FUNC_NOFIELDMAP_MODE=1` enables the no-fieldmap fallback path with zero-unwarp placeholders.
 
 ## Setup

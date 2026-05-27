@@ -28,7 +28,7 @@ PIPELINE_PYTHON="python3"
 # =============================================================================
 # Resume / routing
 START_SESSION=1
-START_FROM_MODULE="anat_charm"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|meica|mgtr|vol2surf|concat|nsi|pfm
+START_FROM_MODULE="anat_charm"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
 STOP_AFTER_MODULE="pfm"          # "" to run full chain
 
 # Functional naming and reference space
@@ -99,6 +99,7 @@ HEADMOTION_KEEP_MCF=0
 # - legacy_rois: func/rois/CorticalRibbon.nii.gz built from FreeSurfer ribbon mgz
 MGTR_RIBBON_SOURCE="xfms"        # xfms|legacy_rois
 
+MGTR_ENABLE="auto"               # auto|0|1; auto skips MGTR after aCompCor because ribbon GS is already modeled
 MGTR_INPUT_TAG=""                # empty => derive from effective denoising branch
 MGTR_OUTPUT_TAG=""               # empty => <MGTR_INPUT_TAG>+MGTR
 VOL2SURF_INPUTS=""               # empty => derive from effective denoising branch

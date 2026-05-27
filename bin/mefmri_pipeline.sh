@@ -50,8 +50,8 @@ fi
 : "${MEDIR:=$(cd "$SCRIPT_DIR/.." && pwd)}"
 : "${EnvironmentScript:=$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh}"
 : "${START_SESSION:=1}"
-: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|meica|mgtr|vol2surf|concat|nsi|pfm
-: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|meica|mgtr|vol2surf|concat|nsi|pfm
+: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
+: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
 : "${PIPELINE_SKIP_ANAT:=0}" # 0|1 (used by FUNC_DIRNAME=All parent loop to avoid rerunning anatomy per task)
 
 # Optional post-config overrides (used internally by the All-tasks driver).
@@ -103,6 +103,7 @@ if [[ -z "${FUNC_XFMS_DIRNAME:-}" ]]; then
 fi
 : "${MGTR_INPUT_TAG:=}"
 : "${MGTR_OUTPUT_TAG:=}"
+: "${MGTR_ENABLE:=auto}" # auto|0|1; auto skips MGTR after aCompCor
 : "${PIPELINE_SOURCE_FUNC_TAG:=}"
 
 # Module-specific thread controls.
@@ -123,7 +124,7 @@ stage_index() {
     fieldmaps) echo 30 ;;
     coreg) echo 40 ;;
     headmotion) echo 50 ;;
-    meica) echo 60 ;;
+    denoise|meica) echo 60 ;;
     mgtr) echo 70 ;;
     vol2surf) echo 80 ;;
     concat) echo 90 ;;
@@ -267,6 +268,12 @@ if [[ -n "${PIPELINE_START_FROM_MODULE_OVERRIDE:-}" ]]; then
 fi
 if [[ -n "${PIPELINE_STOP_AFTER_MODULE_OVERRIDE:-}" ]]; then
   STOP_AFTER_MODULE="${PIPELINE_STOP_AFTER_MODULE_OVERRIDE}"
+fi
+if [[ "${START_FROM_MODULE}" == "meica" ]]; then
+  START_FROM_MODULE="denoise"
+fi
+if [[ "${STOP_AFTER_MODULE:-}" == "meica" ]]; then
+  STOP_AFTER_MODULE="denoise"
 fi
 
 if [ ! -f "$EnvironmentScript" ]; then
@@ -458,12 +465,40 @@ else
   esac
 fi
 PIPELINE_MGTR_OUTPUT_TAG_DEFAULT="${PIPELINE_DENOISE_OUTPUT_TAG}+MGTR"
+PIPELINE_MGTR_TAGS_CONFIGURED=0
+if [[ -n "${MGTR_INPUT_TAG}" || -n "${MGTR_OUTPUT_TAG}" ]]; then
+  PIPELINE_MGTR_TAGS_CONFIGURED=1
+fi
+case "${MGTR_ENABLE}" in
+  auto)
+    if [[ "${PIPELINE_EFFECTIVE_DENOISE_METHOD}" == "acompcor" && "${PIPELINE_MGTR_TAGS_CONFIGURED}" == "0" ]]; then
+      PIPELINE_EFFECTIVE_MGTR_ENABLE=0
+    else
+      PIPELINE_EFFECTIVE_MGTR_ENABLE=1
+    fi
+    ;;
+  0|1)
+    PIPELINE_EFFECTIVE_MGTR_ENABLE="$MGTR_ENABLE"
+    ;;
+  *)
+    echo "ERROR: invalid MGTR_ENABLE='${MGTR_ENABLE}' (expected auto, 0, or 1)"
+    exit 2
+    ;;
+esac
 : "${MGTR_INPUT_TAG:=$PIPELINE_DENOISE_OUTPUT_TAG}"
 : "${MGTR_OUTPUT_TAG:=$PIPELINE_MGTR_OUTPUT_TAG_DEFAULT}"
 if [[ -z "${VOL2SURF_INPUTS}" ]]; then
-  VOL2SURF_INPUTS="${PIPELINE_SOURCE_FUNC_TAG},${PIPELINE_DENOISE_OUTPUT_TAG},${MGTR_OUTPUT_TAG}"
+  if [[ "${PIPELINE_EFFECTIVE_MGTR_ENABLE}" == "1" ]]; then
+    VOL2SURF_INPUTS="${PIPELINE_SOURCE_FUNC_TAG},${PIPELINE_DENOISE_OUTPUT_TAG},${MGTR_OUTPUT_TAG}"
+  else
+    VOL2SURF_INPUTS="${PIPELINE_SOURCE_FUNC_TAG},${PIPELINE_DENOISE_OUTPUT_TAG}"
+  fi
 fi
-: "${CONCAT_INPUT_TAG:=$MGTR_OUTPUT_TAG}"
+if [[ "${PIPELINE_EFFECTIVE_MGTR_ENABLE}" == "1" ]]; then
+  : "${CONCAT_INPUT_TAG:=$MGTR_OUTPUT_TAG}"
+else
+  : "${CONCAT_INPUT_TAG:=$PIPELINE_DENOISE_OUTPUT_TAG}"
+fi
 : "${NSI_INPUT_TAG:=$CONCAT_INPUT_TAG}"
 : "${PFM_INPUT_TAG:=$CONCAT_INPUT_TAG}"
 
@@ -473,6 +508,7 @@ export PIPELINE_DENOISE_FALLBACK_REASON
 export PIPELINE_DENOISE_OUTPUT_TAG
 export PIPELINE_SOURCE_FUNC_TAG
 export PIPELINE_EFFECTIVE_DENOISE_METHOD
+export PIPELINE_EFFECTIVE_MGTR_ENABLE
 export MGTR_INPUT_TAG
 export MGTR_OUTPUT_TAG
 
@@ -491,6 +527,7 @@ echo "Skip anatomy: ${PIPELINE_SKIP_ANAT}"
 echo "Functional naming: func/${FUNC_DIRNAME}, prefix ${FUNC_FILE_PREFIX}_*"
 echo "Functional xfm namespace: func/xfms/${FUNC_XFMS_DIRNAME}"
 echo "FUNC_NOFIELDMAP_MODE: ${FUNC_NOFIELDMAP_MODE}"
+echo "MGTR: requested=${MGTR_ENABLE} effective=${PIPELINE_EFFECTIVE_MGTR_ENABLE}"
 echo "Processing mode: requested=${PROCESSING_MODE} effective=${PIPELINE_EFFECTIVE_DENOISE_MODE} min_echoes=${PIPELINE_MIN_ECHOES}"
 if [[ "${PIPELINE_EFFECTIVE_DENOISE_MODE}" == "single_echo" ]]; then
   echo "Single-echo denoise method: ${SINGLE_ECHO_DENOISE_METHOD} (source echo E${SINGLE_ECHO_ECHO_INDEX})"
@@ -500,7 +537,7 @@ if [[ "${PIPELINE_EFFECTIVE_DENOISE_MODE}" == "single_echo" ]]; then
 else
   echo "Multi-echo denoise method: ${MULTI_ECHO_DENOISE_METHOD}"
 fi
-echo "Threads (anat_hcp,fieldmaps,coreg,headmotion,meica): ${THREADS_ANAT_HCP},${THREADS_FIELDMAPS},${THREADS_COREG},${THREADS_HEADMOTION},${THREADS_MEICA}"
+echo "Threads (anat_hcp,fieldmaps,coreg,headmotion,denoise): ${THREADS_ANAT_HCP},${THREADS_FIELDMAPS},${THREADS_COREG},${THREADS_HEADMOTION},${THREADS_MEICA}"
 echo "MEICA defaults: tedana_env=${TEDANA_ENV:-unset}, compat=${TEDANA_COMPAT_MODE:-unset}, pca=${MEPCA}"
 echo "Masking defaults: CHARM_BRAIN_MASK_MODE=${CHARM_BRAIN_MASK_MODE:-unset}, VOL2SURF_USE_CORTICAL_RIBBON_MASK=${VOL2SURF_USE_CORTICAL_RIBBON_MASK:-unset}, VOL2SURF_USE_GOOD_VOXELS_MASK=${VOL2SURF_USE_GOOD_VOXELS_MASK:-${VOL2SURF_USE_GOOD_VOXELS_MASK_FINAL:-unset}}"
 echo "Reclass defaults: mode=${MEICA_CLASSIFIER_MODE:-unset}, nsi_kill=${MEICA_NSI_KILL_MODE:-unset}, reports_disabled=${MEICA_RECLASS_NO_REPORTS:-unset}"
@@ -518,8 +555,7 @@ run_module() {
     return $?
   fi
 
-  # Some stages share the same pipeline "module tag" for scheduling
-  # (e.g., single-echo aCompCor runs under the historical "meica" stage).
+  # Some denoising methods share the same pipeline scheduling stage.
   # Allow callers to override the user-facing label and logfile suffix without
   # changing scheduling semantics.
   local display_tag log_tag
@@ -605,6 +641,8 @@ if [[ "${RUN_CONFIG_SNAPSHOT}" == "1" ]]; then
     echo "pipeline_source_func_tag=${PIPELINE_SOURCE_FUNC_TAG}"
     echo "pipeline_denoise_output_tag=${PIPELINE_DENOISE_OUTPUT_TAG}"
     echo "pipeline_effective_denoise_method=${PIPELINE_EFFECTIVE_DENOISE_METHOD}"
+    echo "mgtr_enable=${MGTR_ENABLE}"
+    echo "pipeline_effective_mgtr_enable=${PIPELINE_EFFECTIVE_MGTR_ENABLE}"
     echo "mgtr_input_tag=${MGTR_INPUT_TAG}"
     echo "mgtr_output_tag=${MGTR_OUTPUT_TAG}"
     echo "concat_input_tag=${CONCAT_INPUT_TAG:-}"
@@ -713,45 +751,47 @@ else
 fi
 
 print_section "Running denoising"
-if should_run_stage "meica"; then
+if should_run_stage "denoise"; then
   if [[ "${PIPELINE_EFFECTIVE_DENOISE_MODE}" == "single_echo" ]]; then
     if [[ "${SINGLE_ECHO_DENOISE_METHOD}" == "aroma" ]]; then
       [ -f "$FUNC_AROMA_MODULE" ] || { echo "ERROR: missing module: $FUNC_AROMA_MODULE"; exit 2; }
       MODULE_DISPLAY_TAG="${SINGLE_ECHO_DENOISE_METHOD}" MODULE_LOG_TAG="${SINGLE_ECHO_DENOISE_METHOD}" \
-        run_module "meica" bash "$FUNC_AROMA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
+        run_module "denoise" bash "$FUNC_AROMA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
     else
       [ -f "$FUNC_SINGLEECHO_MODULE" ] || { echo "ERROR: missing module: $FUNC_SINGLEECHO_MODULE"; exit 2; }
       MODULE_DISPLAY_TAG="${SINGLE_ECHO_DENOISE_METHOD}" MODULE_LOG_TAG="${SINGLE_ECHO_DENOISE_METHOD}" \
-        run_module "meica" bash "$FUNC_SINGLEECHO_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
+        run_module "denoise" bash "$FUNC_SINGLEECHO_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
     fi
   else
     [ -f "$FUNC_MEICA_MODULE" ] || { echo "ERROR: missing module: $FUNC_MEICA_MODULE"; exit 2; }
     if [[ "${MULTI_ECHO_DENOISE_METHOD}" == "meica" ]]; then
-      run_module "meica" bash "$FUNC_MEICA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$MEPCA" "$MaxIterations" "$MaxRestarts" "$START_SESSION" "$MEDIR"
+      run_module "denoise" bash "$FUNC_MEICA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$MEPCA" "$MaxIterations" "$MaxRestarts" "$START_SESSION" "$MEDIR"
     else
       run_module "meica_optcom" env MEICA_RECLASSIFY_ENABLE=0 bash "$FUNC_MEICA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$MEPCA" "$MaxIterations" "$MaxRestarts" "$START_SESSION" "$MEDIR"
       if [[ "${MULTI_ECHO_DENOISE_METHOD}" == "aroma" ]]; then
         [ -f "$FUNC_AROMA_MODULE" ] || { echo "ERROR: missing module: $FUNC_AROMA_MODULE"; exit 2; }
         MODULE_DISPLAY_TAG="${MULTI_ECHO_DENOISE_METHOD}" MODULE_LOG_TAG="${MULTI_ECHO_DENOISE_METHOD}" \
-          run_module "meica" bash "$FUNC_AROMA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
+          run_module "denoise" bash "$FUNC_AROMA_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
       else
         [ -f "$FUNC_SINGLEECHO_MODULE" ] || { echo "ERROR: missing module: $FUNC_SINGLEECHO_MODULE"; exit 2; }
         MODULE_DISPLAY_TAG="${MULTI_ECHO_DENOISE_METHOD}" MODULE_LOG_TAG="${MULTI_ECHO_DENOISE_METHOD}" \
-          run_module "meica" bash "$FUNC_SINGLEECHO_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
+          run_module "denoise" bash "$FUNC_SINGLEECHO_MODULE" "$Subject" "$StudyFolder" "$THREADS_MEICA" "$START_SESSION" "$MEDIR"
       fi
     fi
   fi
-  if [[ "$STOP_AFTER_MODULE" == "meica" ]]; then
-    echo "Stopping after meica (STOP_AFTER_MODULE=meica)"
+  if [[ "$STOP_AFTER_MODULE" == "denoise" ]]; then
+    echo "Stopping after denoise (STOP_AFTER_MODULE=denoise)"
     exit 0
   fi
 else
-  echo "Skipping meica (START_FROM_MODULE=${START_FROM_MODULE})"
+  echo "Skipping denoise (START_FROM_MODULE=${START_FROM_MODULE})"
 fi
 
 print_section "Running MGTR"
 [ -f "$FUNC_MGTR_MODULE" ] || { echo "ERROR: missing module: $FUNC_MGTR_MODULE"; exit 2; }
-if should_run_stage "mgtr"; then
+if [[ "${PIPELINE_EFFECTIVE_MGTR_ENABLE}" != "1" ]]; then
+  echo "Skipping mgtr (MGTR_ENABLE=${MGTR_ENABLE}, effective denoise method=${PIPELINE_EFFECTIVE_DENOISE_METHOD})"
+elif should_run_stage "mgtr"; then
   run_module "mgtr" bash "$FUNC_MGTR_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION"
   if [[ "$STOP_AFTER_MODULE" == "mgtr" ]]; then
     echo "Stopping after mgtr (STOP_AFTER_MODULE=mgtr)"
