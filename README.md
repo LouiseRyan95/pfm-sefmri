@@ -9,12 +9,15 @@ The main pipeline config is `config/mefmri_wrapper_config.sh`.
 Current release notes:
 
 - `PROCESSING_MODE="auto"` switches single-echo runs into the single-echo branch automatically when the input layout only contains one echo per run.
-- `MULTI_ECHO_DENOISE_METHOD="acompcor"` will generate OCME and run aCompCor on it instead of ME-ICA.
+- `MULTI_ECHO_DENOISE_METHOD` supports `meica`, `acompcor`, and ICA-AROMA branches; `acompcor` will generate OCME and run aCompCor on it instead of ME-ICA.
 - In `single_echo` mode, the pipeline uses `E1` as the source image and writes `*_E1+aCompCor`.
 - In `multi_echo` mode with `acompcor`, the pipeline uses `OCME` as the source image and writes `*_OCME+aCompCor`.
 - `START_FROM_MODULE` and `STOP_AFTER_MODULE` use `denoise` for the denoising stage; legacy `meica` is still accepted as an alias.
 - `MGTR_ENABLE="auto"` skips MGTR after aCompCor because aCompCor already includes the cortical-ribbon mean signal and derivative in its nuisance model. Set `MGTR_ENABLE=1` to force MGTR.
 - `FUNC_NOFIELDMAP_MODE=1` enables the no-fieldmap fallback path with zero-unwarp placeholders.
+- `DISTORTION_CORRECTION_MODE="medic"` enables the experimental MEDIC/warpkit distortion-correction path.
+- QA outputs now live under `func/<FUNC_DIRNAME>/qa/`; coregistration QA is written to `func/<FUNC_DIRNAME>/qa/Coreg/`.
+- Infomap PFM density outputs now use the actual density value in filenames and include `InfomapNetworkLabels_Density<value>_FC.dscalar.nii` community-average FC summaries.
 
 ## Setup
 
@@ -33,6 +36,20 @@ git submodule update --init --recursive
 4. Review `config/mefmri_wrapper_config.sh` and fill in any machine-specific settings.
 5. Set `FS_LICENSE` or `FS_LICENSE_FILE` to a readable FreeSurfer `license.txt`.
 6. If CHARM is not on `PATH`, set `CHARM_BIN` in the config.
+7. If using ICA-AROMA or experimental MEDIC/warpkit, confirm the relevant conda environments or executable overrides in the config.
+
+## Distortion Correction
+
+The default distortion-correction mode is the TOPUP/field-map path:
+
+```bash
+DISTORTION_CORRECTION_MODE="topup"
+```
+
+Other modes:
+
+- `DISTORTION_CORRECTION_MODE="none"` uses the no-fieldmap fallback path and creates zero-unwarp placeholders.
+- `DISTORTION_CORRECTION_MODE="medic"` uses the experimental MEDIC/warpkit path. This requires phase images alongside magnitude echoes and working `wk-medic`, `wk-apply-warp`, and `wk-compute-jacobian` executables.
 
 ## pfm-nsi
 
@@ -86,12 +103,15 @@ community-detection computation.
 With `PFM_INFOMAP_NETWORK_MAPPING_ENABLE=1`, the Infomap path writes:
 
 - `Bipartite_PhysicalCommunities.dtseries.nii`
-- `InfomapNetworkLabels_Density*.dlabel.nii`
-- `InfomapNetworkLabels_Density*_Confidence.dscalar.nii`
-- `InfomapNetworkLabels_Density*_CommunityTable.csv`
-- `InfomapNetworkLabels_Density*_AmbiguousCommunities.csv`
+- `InfomapNetworkLabels_Density<value>.dlabel.nii`
+- `InfomapNetworkLabels_Density<value>_Confidence.dscalar.nii`
+- `InfomapNetworkLabels_Density<value>_FC.dscalar.nii`
+- `InfomapNetworkLabels_Density<value>_CommunityTable.csv`
+- `InfomapNetworkLabels_Density<value>_AmbiguousCommunities.csv`
 - `InfomapNetworkLabels_ModeConsensus.dlabel.nii`
 - `InfomapNetworkLabels_ProbabilityConsensus.dscalar.nii`
+
+`Density<value>` uses the actual graph density, for example `Density0.0005`.
 
 With areal parcellation enabled, the final areal output is named from the
 network-label prefix, for example `InfomapNetworkLabels+ArealParcellation.dlabel.nii`
@@ -119,7 +139,7 @@ ME001/
         ...
   func/
     unprocessed/
-      rest/
+      [task_name]/
         field_maps/
           AP_S1_R1.nii.gz
           AP_S1_R1.json
@@ -131,23 +151,23 @@ ME001/
           PA_S1_R2.json
         session_1/
           run_1/
-            Rest_S1_R1_E1.nii.gz
-            Rest_S1_R1_E1.json
-            Rest_S1_R1_E2.nii.gz
-            Rest_S1_R1_E2.json
-            Rest_S1_R1_E3.nii.gz
-            Rest_S1_R1_E3.json
-            Rest_S1_R1_E4.nii.gz
-            Rest_S1_R1_E4.json
+            [TaskPrefix]_S1_R1_E1.nii.gz
+            [TaskPrefix]_S1_R1_E1.json
+            [TaskPrefix]_S1_R1_E2.nii.gz
+            [TaskPrefix]_S1_R1_E2.json
+            [TaskPrefix]_S1_R1_E3.nii.gz
+            [TaskPrefix]_S1_R1_E3.json
+            [TaskPrefix]_S1_R1_E4.nii.gz
+            [TaskPrefix]_S1_R1_E4.json
           run_2/
-            Rest_S1_R2_E1.nii.gz
-            Rest_S1_R2_E1.json
-            Rest_S1_R2_E2.nii.gz
-            Rest_S1_R2_E2.json
-            Rest_S1_R2_E3.nii.gz
-            Rest_S1_R2_E3.json
-            Rest_S1_R2_E4.nii.gz
-            Rest_S1_R2_E4.json
+            [TaskPrefix]_S1_R2_E1.nii.gz
+            [TaskPrefix]_S1_R2_E1.json
+            [TaskPrefix]_S1_R2_E2.nii.gz
+            [TaskPrefix]_S1_R2_E2.json
+            [TaskPrefix]_S1_R2_E3.nii.gz
+            [TaskPrefix]_S1_R2_E3.json
+            [TaskPrefix]_S1_R2_E4.nii.gz
+            [TaskPrefix]_S1_R2_E4.json
 ```
 ## Notes
 
@@ -163,7 +183,7 @@ Functional runs should be organized by session and run, with one NIfTI file and 
 
 The number of echoes is flexible. The example above shows 4 echoes, but runs may contain 3, 5, or however many echoes are present in the acquisition.
 
-`rest` / `Rest` is the standard default (`FUNC_DIRNAME="rest"`, `FUNC_FILE_PREFIX="Rest"`), but any task name can be used. For example, set `FUNC_DIRNAME="agt"` and `FUNC_FILE_PREFIX="AGT"` to process `func/unprocessed/agt/` with the same anatomical outputs.
+Set `FUNC_DIRNAME="[task_name]"` and `FUNC_FILE_PREFIX="[TaskPrefix]"` to match the folder and functional filename prefix used by your study.
 
 Field maps should be placed in `func/unprocessed/<FUNC_DIRNAME>/field_maps/`, with a matching JSON sidecar for each NIfTI file. Processed field maps are written to `func/<FUNC_DIRNAME>/field_maps/`, so acquisition-specific field maps stay tied to the task that uses them.
 
@@ -215,11 +235,11 @@ Example:
 ```bash
 bash bin/mefmri_import_bids.sh \
   /path/to/bids \
-  06 \
-  /path/to/study/ME06 \
-  --task rest \
-  --func-dirname rest \
-  --func-prefix Rest \
+  [subject_label] \
+  /path/to/study/[subject_id] \
+  --task [bids_task_name] \
+  --func-dirname [task_name] \
+  --func-prefix [TaskPrefix] \
   --mode symlink \
   --overwrite
 ```
@@ -248,7 +268,8 @@ Canonical output filenames are preserved. Provenance is recorded through logs an
 
 When `RUN_CONFIG_SNAPSHOT=1`, each run writes:
 
-- `func/qa/RunMetadata/pipeline_run_<timestamp>.txt`
+- `func/<FUNC_DIRNAME>/qa/RunMetadata/pipeline_run_<timestamp>.txt`
+- `func/<FUNC_DIRNAME>/qa/Coreg/`
 
 When `NSI_USE_EXTERNAL_CLI=1`, NSI outputs are written under:
 

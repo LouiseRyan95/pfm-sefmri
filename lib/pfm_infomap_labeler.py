@@ -14,7 +14,7 @@ import csv
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import nibabel as nib
 import numpy as np
@@ -29,6 +29,42 @@ def bool_int(value: str) -> int:
     if ivalue not in (0, 1):
         raise argparse.ArgumentTypeError("expected 0 or 1")
     return ivalue
+
+
+def parse_num_list_or_colon(expr: str) -> List[float]:
+    expr = str(expr).strip()
+    if not expr:
+        return []
+    if ":" in expr and "," not in expr:
+        parts = [p.strip() for p in expr.split(":")]
+        if len(parts) != 3:
+            raise ValueError(f"Invalid colon expression: {expr}")
+        start, step, stop = [float(x) for x in parts]
+        if step == 0:
+            raise ValueError("density step cannot be zero")
+        out: List[float] = []
+        x = start
+        eps = abs(step) * 1e-9
+        if step > 0:
+            while x <= stop + eps:
+                out.append(x)
+                x += step
+        else:
+            while x >= stop - eps:
+                out.append(x)
+                x += step
+        return out
+    return [float(x.strip()) for x in expr.split(",") if x.strip()]
+
+
+def format_density_value(value: float) -> str:
+    return f"{float(value):.15g}"
+
+
+def density_tag(density_col: int, density_values: Optional[Sequence[float]]) -> str:
+    if density_values is not None and density_col < len(density_values):
+        return f"Density{format_density_value(float(density_values[density_col]))}"
+    return f"Density{density_col + 1:02d}"
 
 
 def zscore_vec(x: np.ndarray) -> np.ndarray:
@@ -141,6 +177,25 @@ def save_dscalar(ref_img: nib.Cifti2Image, maps: np.ndarray, names: Sequence[str
     nib.save(nib.Cifti2Image(arr, hdr, nifti_header=ref_img.nifti_header), str(out_path))
 
 
+def compute_community_fc_maps(
+    data_tg: np.ndarray,
+    comm_ts: np.ndarray,
+    chunk_rows: int,
+) -> np.ndarray:
+    """Return community-average FC maps as community x grayordinate."""
+    n_comm, n_time = comm_ts.shape
+    n_gray = data_tg.shape[1]
+    out = np.zeros((n_comm, n_gray), dtype=np.float32)
+    if n_comm == 0:
+        return out
+    den = max(n_time - 1, 1)
+    for start in range(0, n_gray, int(chunk_rows)):
+        stop = min(start + int(chunk_rows), n_gray)
+        chunk = zscore_rows(data_tg[:, start:stop].T)
+        out[:, start:stop] = np.nan_to_num((comm_ts @ chunk.T) / den).astype(np.float32)
+    return out
+
+
 def write_label_list(path: Path, labels: Sequence[str], colors: np.ndarray, unassigned_value: int) -> None:
     with path.open("w", encoding="utf-8") as f:
         for i, label in enumerate(labels, start=1):
@@ -163,7 +218,7 @@ def import_dlabel(
     out_path: Path,
     tmp_prefix: Path,
 ) -> bool:
-    tmp = tmp_prefix.with_suffix(".dscalar.nii")
+    tmp = Path(str(tmp_prefix) + ".dscalar.nii")
     save_dscalar(ref_img, values, ["labels"], tmp)
     if not wb_available(wb_command):
         fallback = out_path.with_suffix("").with_suffix(".dscalar.nii")
@@ -559,7 +614,11 @@ def density_label(
     prefix = str(args.outfile_prefix)
     n_gray = communities.size
     n_net = len(labels)
-    dens_tag = f"Density{density_col + 1:02d}"
+    dens_tag = density_tag(density_col, getattr(args, "density_values_parsed", None))
+    density_value = ""
+    density_values = getattr(args, "density_values_parsed", None)
+    if density_values is not None and density_col < len(density_values):
+        density_value = format_density_value(float(density_values[density_col]))
     label_map = np.zeros(n_gray, dtype=np.float32)
     conf_map = np.zeros(n_gray, dtype=np.float32)
 
@@ -644,6 +703,7 @@ def density_label(
         conf_map[members] = float(confidence)
         row = {
             "density_index": density_col + 1,
+            "density_value": density_value,
             "community_id": int(cid),
             "community_size": int(sizes[i]),
             "assigned_label_index": int(assigned),
@@ -677,6 +737,7 @@ def density_label(
 
     table_fields = [
         "density_index",
+        "density_value",
         "community_id",
         "community_size",
         "assigned_label_index",
@@ -715,6 +776,12 @@ def density_label(
     dlabel = outdir / f"{prefix}_{dens_tag}.dlabel.nii"
     wrote_dlabel = import_dlabel(args.wb_command, ref_img, label_map, label_list, dlabel, outdir / f"Tmp_{prefix}_{dens_tag}")
     save_dscalar(ref_img, conf_map, ["confidence"], outdir / f"{prefix}_{dens_tag}_Confidence.dscalar.nii")
+    if int(args.write_community_fc) == 1:
+        fc_maps = compute_community_fc_maps(data_tg, metrics["comm_ts"], int(args.fc_chunk_rows))
+        fc_names = [f"Community_{int(cid)}" for cid in community_ids]
+        fc_path = outdir / f"{prefix}_{dens_tag}_FC.dscalar.nii"
+        save_dscalar(ref_img, fc_maps, fc_names, fc_path)
+        print(f"[infomap_labeler] wrote {fc_path}")
     if wrote_dlabel:
         print(f"[infomap_labeler] wrote {dlabel}")
     return label_map, rows
@@ -761,6 +828,13 @@ def main() -> int:
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--outfile-prefix", default="InfomapNetworkLabels")
     ap.add_argument("--density-index", type=int, default=-1)
+    ap.add_argument(
+        "--density-values",
+        default="",
+        help="Graph density values in the same order as the community CIFTI columns; used for output filename tags.",
+    )
+    ap.add_argument("--write-community-fc", type=bool_int, default=1)
+    ap.add_argument("--fc-chunk-rows", type=int, default=4096)
     ap.add_argument("--score-mode", choices=("additive", "beta_product"), default="additive")
     ap.add_argument(
         "--beta-product-threshold-mode",
@@ -818,6 +892,16 @@ def main() -> int:
         raise ValueError("Input CIFTI and communities CIFTI must be 2D")
     if data.shape[1] != comm_data.shape[1]:
         raise ValueError(f"Grayordinate mismatch: data={data.shape[1]} communities={comm_data.shape[1]}")
+    args.density_values_parsed = None
+    if args.density_values.strip():
+        parsed_density_values = parse_num_list_or_colon(args.density_values)
+        if len(parsed_density_values) != comm_data.shape[0]:
+            raise ValueError(
+                f"--density-values length ({len(parsed_density_values)}) must match community columns ({comm_data.shape[0]})"
+            )
+        args.density_values_parsed = parsed_density_values
+    if int(args.fc_chunk_rows) < 1:
+        raise ValueError("--fc-chunk-rows must be >= 1")
 
     axis = img.header.get_axis(1)
     cortex_idx = cortical_grayordinates(axis)

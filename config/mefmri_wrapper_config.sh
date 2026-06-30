@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
-# Config for RevisedMe-fMRIPipeline/mefmri_pipeline.sh
+# Config for ME-fMRI pipeline
 #
-# Wrapper call:
+# Wrapper usage:
 #   mefmri_pipeline.sh <SubjectDir> [ConfigFile]
+#
+# This file is the main pipeline configuration. Most users should review the
+# path/environment settings near the top, then change only task naming,
+# processing mode, denoising method, and output-stage controls as needed.
+#
+# New user TODO before running:
+#   - Confirm EnvironmentScript points to your HCP Pipelines setup script.
+#   - Set CHARM_BIN to your SimNIBS CHARM executable.
+#   - Confirm repository resources are present: AtlasTemplate, Priors.mat,
+#     SubcorticalPriors.nii.gz, and template/resource files under res0urces/.
+#   - Confirm conda environments or executable paths for tedana/ME-ICA,
+#     ICA-AROMA, and experimental MEDIC/warpkit if those branches are used.
+#   - Replace explicit executable overrides when using external tools.
 #
 # Organization:
 #   1) Core paths and environment
@@ -16,9 +29,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MEDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 EnvironmentScript="$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh"
-CHARM_BIN="/home/charleslynch/SimNIBS-4.5/bin/charm"
+CHARM_BIN="/path/to/SimNIBS/bin/charm"
 
-# Shared resource roots used by downstream modules.
+# Repository resources used by downstream modules. Leave these repository-
+# relative defaults unless your resource bundle lives somewhere else.
 PFM_NETWORK_PRIORS_CORTICAL_MAT="$MEDIR/res0urces/Priors.mat"
 PFM_NETWORK_PRIORS_SUBCORTICAL_NII="$MEDIR/res0urces/SubcorticalPriors.nii.gz"
 PIPELINE_PYTHON="python3"
@@ -41,12 +55,12 @@ AtlasSpace="T1w"                 # T1w|MNINonlinear
 APPLY_N4_BIAS=0                  # 0|1 ; usually leave off if prescan normalize was enabled
 
 # Global pipeline behavior
-RUN_CONFIG_SNAPSHOT=1            # 1 writes effective run metadata snapshot into subject func/qa
+RUN_CONFIG_SNAPSHOT=1            # 1 writes effective run metadata snapshot into func/<FUNC_DIRNAME>/qa
 VALIDATE_ECHO_DIM4_POLICY="error" # error|warn
 FUNC_NOFIELDMAP_MODE=0           # 0|1: functional-only fallback mode with zero-unwarp placeholders
 PROCESSING_MODE="auto"           # auto|multi_echo|single_echo
-MULTI_ECHO_DENOISE_METHOD="meica" # meica|acompcor
-SINGLE_ECHO_DENOISE_METHOD="acompcor" # acompcor
+MULTI_ECHO_DENOISE_METHOD="meica" # meica|aroma|acompcor
+SINGLE_ECHO_DENOISE_METHOD="acompcor" # aroma|acompcor
 SINGLE_ECHO_ECHO_INDEX=1         # fallback/source echo used for single-echo denoising
 CONCAT_ENABLE=1
 NSI_ENABLE=1
@@ -82,20 +96,37 @@ CHARM_CORTICAL_RIBBON_EXCLUDE_LABELS=1  # 1 removes HC/Amy/CSF, 0 keeps FS ribbo
 CHARM_WRITE_CORTICAL_RIBBON=1           # 1 writes anat/T1w/CorticalRibbon.nii.gz
 
 # -----------------------------------------------------------------------------
-# 3b) Functional Fieldmaps / Coreg / Headmotion
+# 3b) Functional Distortion Correction / Coreg / Headmotion
 # -----------------------------------------------------------------------------
+DISTORTION_CORRECTION_MODE="topup" # topup|medic|none ; MEDIC/warpkit support is experimental
 FM_PE_MODE="infer"               # infer|config
 FM_AP_PE_DIR=""                  # e.g. j-
 FM_PA_PE_DIR=""                  # e.g. j
 EPIREG_PEDIR=""                  # empty => infer from PE.txt
 SCAN_SPECIFIC_FM=1
 HEADMOTION_KEEP_MCF=0
+SBREF_FALLBACK_SKIP_TRS=10       # used only when no real SBRef exists; also written to rmVols.txt
+SBREF_REORIENT_TO_STD=1          # 1 runs fslreorient2std on real/fallback SBRefs before coreg
+SBREF_ECHO_COMBINATION="mean"    # mean|sos|t2s|paid|first|last; used by topup, medic, and no-fieldmap SBRefs
+SBREF_MAX_TE_MS=60               # echo SBRefs with TE < this value are included; set to none to include all echoes
+SBREF_T2SMAP_MASK_THR=1          # temporary nonzero mask threshold for t2s/paid SBRef combination
+SBREF_T2SMAP_THREADS=1           # tedana t2smap threads for t2s/paid SBRef combination
+SBREF_KEEP_INTERMEDIATES=0       # 1 keeps SBRef combination scratch folders for debugging
+FUNC_REORIENT_TO_STD=1           # 1 runs fslreorient2std on copied echo timeseries before mcflirt
+
+# Experimental MEDIC/warpkit runtime. Keep this separate from TEDANA_ENV so
+# tedana's tested Python stack remains stable while warpkit can use its own env.
+WARPKIT_ENV="warpkit_env"         # conda environment expected to provide wk-medic and related wk-* CLIs
+WARPKIT_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
+WARPKIT_MEDIC_BIN="wk-medic"
+WARPKIT_APPLY_WARP_BIN="wk-apply-warp"
+WARPKIT_COMPUTE_JACOBIAN_BIN="wk-compute-jacobian"
 
 # -----------------------------------------------------------------------------
 # 3c) MGTR / Vol2Surf
 # -----------------------------------------------------------------------------
 # MGTR cortical ribbon source
-# - xfms: func/xfms/rest/CorticalRibbon_*_func_mask.nii.gz
+# - xfms: func/xfms/<FUNC_XFMS_DIRNAME or FUNC_DIRNAME>/CorticalRibbon_*_func_mask.nii.gz
 # - legacy_rois: func/rois/CorticalRibbon.nii.gz built from FreeSurfer ribbon mgz
 MGTR_RIBBON_SOURCE="xfms"        # xfms|legacy_rois
 
@@ -129,7 +160,15 @@ MEICA_QC_CIFTI_TAGS="betas_OC,t2sv,s0v"
 MEICA_ORIG_ALIAS_ENABLE=1        # 1 creates legacy/orig filename aliases
 
 # -----------------------------------------------------------------------------
-# 3e) Concat
+# 3e) ICA-AROMA
+# -----------------------------------------------------------------------------
+AROMA_ENV="aroma"                # conda environment used only when an AROMA branch is selected
+AROMA_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
+AROMA_BIN_OVERRIDE=""            # optional explicit path, e.g. /path/to/ICA_AROMA.py
+AROMA_NSI_THRESHOLD=0.05
+
+# -----------------------------------------------------------------------------
+# 3f) Concat
 # -----------------------------------------------------------------------------
 CONCAT_PYTHON="$PIPELINE_PYTHON"
 CONCAT_INPUT_TAG=""              # empty => derive from effective denoising branch
@@ -138,7 +177,7 @@ CONCAT_CENSOR_BY_FD=1
 CONCAT_FD_THRESHOLD=0.3
 
 # -----------------------------------------------------------------------------
-# 3f) NSI
+# 3g) NSI
 # -----------------------------------------------------------------------------
 NSI_USE_EXTERNAL_CLI=1
 NSI_PYTHON="$CONCAT_PYTHON"
@@ -149,7 +188,7 @@ NSI_USABILITY_MODEL=1
 NSI_RELIABILITY_MODEL=0
 
 # -----------------------------------------------------------------------------
-# 3g) PFM
+# 3h) PFM
 # -----------------------------------------------------------------------------
 PFM_STRATEGY="ridge_fusion"           # ridge_fusion | infomap
 PFM_PYTHON="$PIPELINE_PYTHON"
@@ -175,11 +214,16 @@ VALIDATE_MODULE="$MEDIR/modules/mefmri_validate_inputs.sh"
 ANAT_HCP_MODULE="$MEDIR/modules/mefmri_anat_hcp.sh"
 ANAT_CHARM_MODULE="$MEDIR/modules/mefmri_anat_charm.sh"
 FUNC_FIELDMAPS_MODULE="$MEDIR/modules/mefmri_func_fieldmaps.sh"
+FUNC_MEDIC_MODULE="$MEDIR/modules/mefmri_func_medic.sh"
+FUNC_MEDIC_REFERENCE_MODULE="$MEDIR/modules/mefmri_func_medic_reference.sh"
+FUNC_MEDIC_COREG_MODULE="$MEDIR/modules/mefmri_func_coreg_medic.sh"
+FUNC_MEDIC_HEADMOTION_MODULE="$MEDIR/modules/mefmri_func_headmotion_medic.sh"
 FUNC_COREG_MODULE="$MEDIR/modules/mefmri_func_coreg.sh"
 FUNC_HEADMOTION_MODULE="$MEDIR/modules/mefmri_func_headmotion.sh"
 FUNC_MEICA_MODULE="$MEDIR/modules/mefmri_func_meica.sh"
 FUNC_SINGLEECHO_MODULE="$MEDIR/modules/mefmri_func_singleecho.sh"
 FUNC_ACOMPCOR_MODULE="$MEDIR/modules/mefmri_func_acompcor.sh"
+FUNC_AROMA_MODULE="$MEDIR/modules/mefmri_func_aroma.sh"
 FUNC_MGTR_MODULE="$MEDIR/modules/mefmri_func_mgtr.sh"
 FUNC_VOL2SURF_MODULE="$MEDIR/modules/mefmri_func_vol2surf.sh"
 FUNC_CONCAT_MODULE="$MEDIR/modules/mefmri_func_concat.sh"
@@ -195,7 +239,18 @@ VOL2SURF_GOOD_VOXELS_SIGMA_MM="5"
 VOL2SURF_GOOD_VOXELS_KEEP_INTERMEDIATES=1
 
 # -----------------------------------------------------------------------------
-# 4c) Tedana Detailed Options
+# 4c) MEDIC / warpkit Detailed Options
+# -----------------------------------------------------------------------------
+# Experimental options used only when DISTORTION_CORRECTION_MODE="medic".
+MEDIC_OVERWRITE=0                 # 0 skips existing MEDIC outputs, 1 reruns wk-medic
+MEDIC_NOISE_FRAMES=0              # trailing frames to trim before MEDIC, passed to wk-medic --noiseframes
+MEDIC_DEBUG=0                     # 1 passes --debug to wk-medic
+MEDIC_WRAP_LIMIT=0                # 1 passes --wrap-limit to wk-medic
+MEDIC_COMPUTE_JACOBIAN=1          # 1 also writes per-frame Jacobian maps
+MEDIC_REFERENCE_POLICY="first"    # first|motion_reference|median|mean displacement frame for coreg references
+
+# -----------------------------------------------------------------------------
+# 4d) Tedana Detailed Options
 # -----------------------------------------------------------------------------
 TEDANA_FITTYPE="curvefit"        # curvefit|loglin
 TEDANA_ICA_METHOD="fastica"      # fastica|robustica
@@ -210,7 +265,7 @@ TEDANA_USE_EXTERNAL_MIX=0
 TEDANA_EXTERNAL_MIX_BASENAME=""
 
 # -----------------------------------------------------------------------------
-# 4d) MEICA / Reclassify Detailed Thresholds
+# 4e) MEICA / Reclassify Detailed Thresholds
 # -----------------------------------------------------------------------------
 MEICA_PRIORS_MAT="$PFM_NETWORK_PRIORS_CORTICAL_MAT"
 MEICA_BETAS_CIFTI=""
@@ -235,7 +290,7 @@ MEICA_KILL_VAR_FLOOR_QUANTILE=0.60
 MEICA_KILL_CUMVAR_CAP=0.95
 
 # -----------------------------------------------------------------------------
-# 4e) Concat Detailed Options
+# 4f) Concat Detailed Options
 # -----------------------------------------------------------------------------
 CONCAT_DEMEAN_RUNS=1
 CONCAT_VAR_NORM_RUNS=0
@@ -245,7 +300,7 @@ CONCAT_SAVE_FD_TXT=1
 CONCAT_SAVE_SCANIDX_TXT=1
 
 # -----------------------------------------------------------------------------
-# 4f) NSI Detailed Options
+# 4g) NSI Detailed Options
 # -----------------------------------------------------------------------------
 NSI_RELIABILITY_NSI_T=10
 NSI_RELIABILITY_QUERY_T=60
@@ -272,13 +327,13 @@ NSI_EXTERNAL_KEEP_BETAS=1
 NSI_EXTERNAL_KEEP_FC_MAP=0
 
 # -----------------------------------------------------------------------------
-# 4g) PFM Shared Resources
+# 4h) PFM Shared Resources
 # -----------------------------------------------------------------------------
 PFM_DISTANCE_VARIANT_CHUNK_ROWS=128
 PFM_RESOURCES_ROOT="$MEDIR/res0urces"
 
 # -----------------------------------------------------------------------------
-# 4h) PFM Ridge-Fusion
+# 4i) PFM Ridge-Fusion
 # -----------------------------------------------------------------------------
 PFM_RF_OUTFILE="RidgeFusion_VTX"
 PFM_RF_FC_WEIGHT=1.0              # weight on subject functional connectivity evidence
@@ -300,7 +355,7 @@ PFM_SUBCORT_PRIORS_NII="$PFM_NETWORK_PRIORS_SUBCORTICAL_NII"
 PFM_NEIGHBORS_MAT="$PFM_RESOURCES_ROOT/Cifti_surf_neighbors_LR_normalwall.mat"
 
 # -----------------------------------------------------------------------------
-# 4i) PFM Infomap
+# 4j) PFM Infomap
 # -----------------------------------------------------------------------------
 PFM_INFOMAP_DISTANCE_MATRIX=""          # empty => PFM_DISTANCE_MATRIX (.npy; auto-built when missing)
 PFM_INFOMAP_GRAPH_DENSITIES_EXPR="0.01,0.005,0.002,0.001,0.0005,0.0002,0.0001" # graph densities, from dense to sparse

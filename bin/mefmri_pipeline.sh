@@ -63,6 +63,9 @@ fi
 : "${ANAT_HCP_MODULE:=$MEDIR/modules/mefmri_anat_hcp.sh}"
 : "${ANAT_CHARM_MODULE:=$MEDIR/modules/mefmri_anat_charm.sh}"
 : "${FUNC_FIELDMAPS_MODULE:=$MEDIR/modules/mefmri_func_fieldmaps.sh}"
+: "${FUNC_MEDIC_MODULE:=$MEDIR/modules/mefmri_func_medic.sh}"
+: "${FUNC_MEDIC_COREG_MODULE:=$MEDIR/modules/mefmri_func_coreg_medic.sh}"
+: "${FUNC_MEDIC_HEADMOTION_MODULE:=$MEDIR/modules/mefmri_func_headmotion_medic.sh}"
 : "${FUNC_COREG_MODULE:=$MEDIR/modules/mefmri_func_coreg.sh}"
 : "${FUNC_HEADMOTION_MODULE:=$MEDIR/modules/mefmri_func_headmotion.sh}"
 : "${FUNC_MEICA_MODULE:=$MEDIR/modules/mefmri_func_meica.sh}"
@@ -87,11 +90,27 @@ fi
 : "${PFM_ENABLE:=1}" # 0|1
 : "${RUN_CONFIG_SNAPSHOT:=1}" # 0|1
 : "${FUNC_NOFIELDMAP_MODE:=0}" # 0|1
+: "${DISTORTION_CORRECTION_MODE:=topup}" # topup|medic|none
 : "${PROCESSING_MODE:=auto}" # auto|multi_echo|single_echo
 : "${MULTI_ECHO_DENOISE_METHOD:=meica}" # meica|aroma|acompcor
 : "${SINGLE_ECHO_DENOISE_METHOD:=acompcor}" # aroma|acompcor
 : "${SINGLE_ECHO_ECHO_INDEX:=1}"
 : "${AROMA_NSI_THRESHOLD:=0.05}"
+
+case "$DISTORTION_CORRECTION_MODE" in
+  topup) ;;
+  none)
+    FUNC_NOFIELDMAP_MODE=1
+    ;;
+  medic)
+    # MEDIC provides its own coreg/headmotion modules after displacement-map
+    # generation. Keep the mode explicit so it cannot silently fall back to TOPUP.
+    ;;
+  *)
+    echo "ERROR: DISTORTION_CORRECTION_MODE must be topup, medic, or none (got '$DISTORTION_CORRECTION_MODE')" >&2
+    exit 2
+    ;;
+esac
 
 # Functional naming/outputs.
 : "${VOL2SURF_INPUTS:=}"
@@ -526,6 +545,7 @@ echo "Task loop child: ${PIPELINE_TASK_LOOP_CHILD}"
 echo "Skip anatomy: ${PIPELINE_SKIP_ANAT}"
 echo "Functional naming: func/${FUNC_DIRNAME}, prefix ${FUNC_FILE_PREFIX}_*"
 echo "Functional xfm namespace: func/xfms/${FUNC_XFMS_DIRNAME}"
+echo "Distortion correction mode: ${DISTORTION_CORRECTION_MODE}"
 echo "FUNC_NOFIELDMAP_MODE: ${FUNC_NOFIELDMAP_MODE}"
 echo "MGTR: requested=${MGTR_ENABLE} effective=${PIPELINE_EFFECTIVE_MGTR_ENABLE}"
 echo "Processing mode: requested=${PROCESSING_MODE} effective=${PIPELINE_EFFECTIVE_DENOISE_MODE} min_echoes=${PIPELINE_MIN_ECHOES}"
@@ -543,7 +563,8 @@ echo "Masking defaults: CHARM_BRAIN_MASK_MODE=${CHARM_BRAIN_MASK_MODE:-unset}, V
 echo "Reclass defaults: mode=${MEICA_CLASSIFIER_MODE:-unset}, nsi_kill=${MEICA_NSI_KILL_MODE:-unset}, reports_disabled=${MEICA_RECLASS_NO_REPORTS:-unset}"
 echo "Module output mode: quiet=${PIPELINE_QUIET_MODULE_OUTPUT}"
 
-MODULE_LOG_DIR="$SubjectDir/func/qa/ModuleLogs"
+FUNC_QA_DIR="$SubjectDir/func/$FUNC_DIRNAME/qa"
+MODULE_LOG_DIR="$FUNC_QA_DIR/ModuleLogs"
 mkdir -p "$MODULE_LOG_DIR"
 
 run_module() {
@@ -576,7 +597,7 @@ run_module() {
       if ($0 ~ /^\[(concat|nsi|pfm)\] complete$/) {
         next
       }
-      if ($0 ~ /^\[coreg\]/ || $0 ~ /^\[headmotion\]/ || $0 ~ /^\[concat\]/ || $0 ~ /^\[nsi\]/ || $0 ~ /^\[pfm\]/ ||
+      if ($0 ~ /^\[coreg\]/ || $0 ~ /^\[headmotion\]/ || $0 ~ /^\[medic\]/ || $0 ~ /^\[concat\]/ || $0 ~ /^\[nsi\]/ || $0 ~ /^\[pfm\]/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: start subject=/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: start session_/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: done session_/ ||
@@ -616,7 +637,7 @@ print_section() {
 }
 
 if [[ "${RUN_CONFIG_SNAPSHOT}" == "1" ]]; then
-  RUN_META_DIR="$SubjectDir/func/qa/RunMetadata"
+  RUN_META_DIR="$FUNC_QA_DIR/RunMetadata"
   mkdir -p "$RUN_META_DIR"
   RUN_META_FILE="$RUN_META_DIR/pipeline_run_$(date +%Y%m%d_%H%M%S).txt"
   {
@@ -630,6 +651,12 @@ if [[ "${RUN_CONFIG_SNAPSHOT}" == "1" ]]; then
     echo "func_dirname=$FUNC_DIRNAME"
     echo "func_file_prefix=$FUNC_FILE_PREFIX"
     echo "func_xfms_dirname=$FUNC_XFMS_DIRNAME"
+    echo "distortion_correction_mode=$DISTORTION_CORRECTION_MODE"
+    echo "sbref_echo_combination=${SBREF_ECHO_COMBINATION:-}"
+    echo "sbref_max_te_ms=${SBREF_MAX_TE_MS:-}"
+    echo "sbref_t2smap_mask_thr=${SBREF_T2SMAP_MASK_THR:-}"
+    echo "sbref_t2smap_threads=${SBREF_T2SMAP_THREADS:-}"
+    echo "sbref_keep_intermediates=${SBREF_KEEP_INTERMEDIATES:-}"
     echo "processing_mode_requested=${PROCESSING_MODE}"
     echo "processing_mode_effective=${PIPELINE_EFFECTIVE_DENOISE_MODE}"
     echo "processing_mode_reason=${PIPELINE_DENOISE_FALLBACK_REASON}"
@@ -656,6 +683,8 @@ if [[ "${RUN_CONFIG_SNAPSHOT}" == "1" ]]; then
     echo "vol2surf_good_voxels_keep_intermediates=${VOL2SURF_GOOD_VOXELS_KEEP_INTERMEDIATES:-}"
     echo "tedana_env=${TEDANA_ENV:-}"
     echo "tedana_compat_mode=${TEDANA_COMPAT_MODE:-}"
+    echo "warpkit_env=${WARPKIT_ENV:-}"
+    echo "warpkit_activate_mode=${WARPKIT_ACTIVATE_MODE:-}"
     echo "mepca=$MEPCA"
     echo "meica_classifier_mode=${MEICA_CLASSIFIER_MODE:-}"
     echo "meica_nsi_kill_mode=${MEICA_NSI_KILL_MODE:-}"
@@ -713,23 +742,52 @@ else
   echo "Skipping anat_charm (START_FROM_MODULE=${START_FROM_MODULE})"
 fi
 
-print_section "Processing fieldmaps"
-[ -f "$FUNC_FIELDMAPS_MODULE" ] || { echo "ERROR: missing module: $FUNC_FIELDMAPS_MODULE"; exit 2; }
-[ -x "$FUNC_FIELDMAPS_MODULE" ] || chmod +x "$FUNC_FIELDMAPS_MODULE"
+print_section "Processing distortion correction inputs"
 if should_run_stage "fieldmaps"; then
-  run_module "fieldmaps" bash "$FUNC_FIELDMAPS_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME"
+  case "$DISTORTION_CORRECTION_MODE" in
+    topup)
+      [ -f "$FUNC_FIELDMAPS_MODULE" ] || { echo "ERROR: missing module: $FUNC_FIELDMAPS_MODULE"; exit 2; }
+      [ -x "$FUNC_FIELDMAPS_MODULE" ] || chmod +x "$FUNC_FIELDMAPS_MODULE"
+      run_module "fieldmaps" bash "$FUNC_FIELDMAPS_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME"
+      ;;
+    none)
+      echo "Skipping fieldmap estimation (DISTORTION_CORRECTION_MODE=none; FUNC_NOFIELDMAP_MODE=1)"
+      ;;
+    medic)
+      [ -f "$FUNC_MEDIC_MODULE" ] || { echo "ERROR: missing module: $FUNC_MEDIC_MODULE"; exit 2; }
+      [ -x "$FUNC_MEDIC_MODULE" ] || chmod +x "$FUNC_MEDIC_MODULE"
+      run_module "medic" env \
+        WARPKIT_ENV="${WARPKIT_ENV:-warpkit_env}" \
+        WARPKIT_ACTIVATE_MODE="${WARPKIT_ACTIVATE_MODE:-conda_activate}" \
+        WARPKIT_MEDIC_BIN="${WARPKIT_MEDIC_BIN:-wk-medic}" \
+        WARPKIT_COMPUTE_JACOBIAN_BIN="${WARPKIT_COMPUTE_JACOBIAN_BIN:-wk-compute-jacobian}" \
+        MEDIC_OVERWRITE="${MEDIC_OVERWRITE:-0}" \
+        MEDIC_NOISE_FRAMES="${MEDIC_NOISE_FRAMES:-0}" \
+        MEDIC_DEBUG="${MEDIC_DEBUG:-0}" \
+        MEDIC_WRAP_LIMIT="${MEDIC_WRAP_LIMIT:-0}" \
+        MEDIC_COMPUTE_JACOBIAN="${MEDIC_COMPUTE_JACOBIAN:-1}" \
+        FUNC_FILE_PREFIX="${FUNC_FILE_PREFIX:-Rest}" \
+        bash "$FUNC_MEDIC_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+      ;;
+  esac
   if [[ "$STOP_AFTER_MODULE" == "fieldmaps" ]]; then
-    echo "Stopping after fieldmaps (STOP_AFTER_MODULE=fieldmaps)"
+    echo "Stopping after distortion correction inputs (STOP_AFTER_MODULE=fieldmaps)"
     exit 0
   fi
 else
-  echo "Skipping fieldmaps (START_FROM_MODULE=${START_FROM_MODULE})"
+  echo "Skipping distortion correction inputs (START_FROM_MODULE=${START_FROM_MODULE})"
 fi
 
 print_section "Coregistering SBrefs to anatomical image"
-[ -f "$FUNC_COREG_MODULE" ] || { echo "ERROR: missing module: $FUNC_COREG_MODULE"; exit 2; }
+CoregModule="$FUNC_COREG_MODULE"
+CoregTag="coreg"
+if [[ "$DISTORTION_CORRECTION_MODE" == "medic" ]]; then
+  CoregModule="$FUNC_MEDIC_COREG_MODULE"
+  CoregTag="coreg_medic"
+fi
+[ -f "$CoregModule" ] || { echo "ERROR: missing module: $CoregModule"; exit 2; }
 if should_run_stage "coreg"; then
-  run_module "coreg" bash "$FUNC_COREG_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$AtlasTemplate" "$DOF" "$THREADS_COREG" "$START_SESSION" "$AtlasSpace" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+  run_module "$CoregTag" bash "$CoregModule" "$MEDIR" "$Subject" "$StudyFolder" "$AtlasTemplate" "$DOF" "$THREADS_COREG" "$START_SESSION" "$AtlasSpace" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
   if [[ "$STOP_AFTER_MODULE" == "coreg" ]]; then
     echo "Stopping after coreg (STOP_AFTER_MODULE=coreg)"
     exit 0
@@ -739,9 +797,15 @@ else
 fi
 
 print_section "Applying slice-time/headmotion/distortion corrections"
-[ -f "$FUNC_HEADMOTION_MODULE" ] || { echo "ERROR: missing module: $FUNC_HEADMOTION_MODULE"; exit 2; }
+HeadmotionModule="$FUNC_HEADMOTION_MODULE"
+HeadmotionTag="headmotion"
+if [[ "$DISTORTION_CORRECTION_MODE" == "medic" ]]; then
+  HeadmotionModule="$FUNC_MEDIC_HEADMOTION_MODULE"
+  HeadmotionTag="headmotion_medic"
+fi
+[ -f "$HeadmotionModule" ] || { echo "ERROR: missing module: $HeadmotionModule"; exit 2; }
 if should_run_stage "headmotion"; then
-  run_module "headmotion" bash "$FUNC_HEADMOTION_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$AtlasTemplate" "$DOF" "$THREADS_HEADMOTION" "$START_SESSION" "$AtlasSpace" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+  run_module "$HeadmotionTag" bash "$HeadmotionModule" "$MEDIR" "$Subject" "$StudyFolder" "$AtlasTemplate" "$DOF" "$THREADS_HEADMOTION" "$START_SESSION" "$AtlasSpace" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
   if [[ "$STOP_AFTER_MODULE" == "headmotion" ]]; then
     echo "Stopping after headmotion (STOP_AFTER_MODULE=headmotion)"
     exit 0

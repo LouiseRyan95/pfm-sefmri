@@ -14,7 +14,7 @@ IMPORT_PROTOCOL_NAME="cmrr_mb4_te4_rest_default"
 IMPORT_DCM2NIIX_BIN="${IMPORT_DCM2NIIX_BIN:-dcm2niix}"
 
 FUNC_DIRNAME="rest"              # task folder under func/unprocessed; rest/Rest is the standard default
-FUNC_FILE_PREFIX="Rest"          # output prefix for this task's runs; use e.g. AGT for FUNC_DIRNAME=agt
+FUNC_FILE_PREFIX="Rest"          # output prefix for this task's runs; use e.g. [TaskPrefix] for FUNC_DIRNAME=[task_name]
 
 # Per-import expectations.
 IMPORT_EXPECT_TASK_RUNS_PER_SESSION=2

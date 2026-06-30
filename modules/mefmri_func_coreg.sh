@@ -36,7 +36,7 @@ COREG_PYTHON="${COREG_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
 FM_OUT_DIR_REL="${FM_OUT_DIR_REL:-func/${FuncDirName}/field_maps}"
 FM_DIR="$Subdir/$FM_OUT_DIR_REL"
-COREG_QA_DIR="${COREG_QA_DIR:-$Subdir/func/${FuncDirName}/qa/CoregQA}"
+COREG_QA_DIR="${COREG_QA_DIR:-$Subdir/func/${FuncDirName}/qa/Coreg}"
 
 case "${AtlasSpace}" in
 	T1w|MNINonlinear) ;;
@@ -338,7 +338,7 @@ invwarp -w "$XfmsDir"/AvgSBref2nonlin_EpiReg+BBR_warp.nii.gz -o "$XfmsDir"/AvgSB
 # Also coregister individual SBrefs to the target anatomical image.
 # This supports comparison of the average field map and scan-specific field maps.
 
-# create & define the task-specific CoregQA folder;
+# create & define the task-specific coregistration QA folder;
 mkdir -p "$COREG_QA_DIR" #> /dev/null 2>&1
 
 # count the number of sessions
@@ -377,7 +377,7 @@ func () {
 			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
 			mv "$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r".nii.gz "$COREG_QA_DIR"/SBref2acpc_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz
 			
-			# warp SBref image into MNI atlas volume space in a single spline warp; can be used for CoregQA
+			# warp SBref image into MNI atlas volume space in a single spline warp; can be used for coregistration QA
 			convertwarp --ref="$5" --warp1="$2"/func/xfms/"$FuncXfmsDir"/SBref2acpc_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz --warp2="$2"/anat/MNINonLinear/xfms/acpc_dc2standard.nii.gz --out="$2"/func/xfms/"$FuncXfmsDir"/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
 			applywarp --interp=spline --in="$2"/func/"$FuncDirName"/session_"$6"/run_"$r"/SBref.nii.gz --ref="$5" --out="$COREG_QA_DIR"/SBref2nonlin_EpiReg+BBR_ScanSpecificFM_S"$6"_R"$r".nii.gz --warp="$2"/func/xfms/"$FuncXfmsDir"/SBref2nonlin_EpiReg+BBR_S"$6"_R"$r"_warp.nii.gz
 
@@ -529,4 +529,4 @@ rm -rf "$Subdir"/anat/T1w/freesurfer/
 # Generate subcortical ROIs in the ACPC/nonlinear functional grid.
 "$MEDIR"/lib/make_precise_subcortical_labels.sh "$Subdir" "$AtlasTemplate" "$MEDIR"
 
-echo "[INFO] Coreg module complete. MATLAB CoregQA post-steps are not used in this revised pipeline."
+echo "[INFO] Coreg module complete. MATLAB coregistration QA post-steps are not used in this revised pipeline."

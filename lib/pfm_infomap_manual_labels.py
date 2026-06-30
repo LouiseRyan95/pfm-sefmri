@@ -18,10 +18,12 @@ import nibabel as nib
 import numpy as np
 
 from pfm_infomap_labeler import (
+    density_tag,
     import_dlabel,
     load_priors,
     mode_consensus,
     probability_consensus,
+    parse_num_list_or_colon,
     save_dscalar,
     write_borders,
     write_label_list,
@@ -157,6 +159,11 @@ def main() -> int:
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--outfile-prefix", default="InfomapNetworkLabels_ManualAdjusted")
     ap.add_argument("--density-index", type=int, default=-1)
+    ap.add_argument(
+        "--density-values",
+        default="",
+        help="Graph density values in the same order as the community CIFTI columns; used for output filename tags.",
+    )
     ap.add_argument("--unassigned-value", type=int, default=21)
     ap.add_argument("--left-surf", default="")
     ap.add_argument("--right-surf", default="")
@@ -169,6 +176,13 @@ def main() -> int:
     comm_data = np.asarray(comm_img.get_fdata(dtype=np.float32))
     if comm_data.ndim != 2:
         raise ValueError("Communities CIFTI must be 2D")
+    density_values = None
+    if args.density_values.strip():
+        density_values = parse_num_list_or_colon(args.density_values)
+        if len(density_values) != comm_data.shape[0]:
+            raise ValueError(
+                f"--density-values length ({len(density_values)}) must match community columns ({comm_data.shape[0]})"
+            )
 
     _, _, labels, colors = load_priors(Path(args.priors_mat))
     n_net = len(labels)
@@ -194,7 +208,7 @@ def main() -> int:
         label_map = np.zeros(comm_data.shape[1], dtype=np.float32)
         for community, label in assignments.get(density, {}).items():
             label_map[communities == int(community)] = float(label)
-        dens_tag = f"Density{density:02d}"
+        dens_tag = density_tag(di, density_values)
         dlabel = outdir / f"{args.outfile_prefix}_{dens_tag}.dlabel.nii"
         wrote = import_dlabel(
             args.wb_command,

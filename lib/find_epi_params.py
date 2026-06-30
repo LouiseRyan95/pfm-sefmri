@@ -4,7 +4,7 @@ No-MATLAB replacement for find_epi_params.m.
 Creates run-level metadata sidecars used by coreg/headmotion:
   - TE.txt, TR.txt, EffectiveEchoSpacing.txt, SliceTiming.txt, PE.txt
 Also updates:
-  - func/qa/AllTEs.txt, func/qa/AllTRs.txt
+  - func/<FuncName>/qa/AllTEs.txt, func/<FuncName>/qa/AllTRs.txt
   - func/xfms/<FuncName>/EffectiveEchoSpacing.txt (when StartSession == 1)
 """
 
@@ -74,7 +74,7 @@ def main() -> None:
     start_session = args.start_session
     in_root = subdir / "func" / "unprocessed" / func_name
     out_root = subdir / "func" / func_name
-    qa_dir = subdir / "func" / "qa"
+    qa_dir = subdir / "func" / func_name / "qa"
     xfms_dir = subdir / "func" / "xfms" / func_name
 
     if start_session == 1 and out_root.exists():
