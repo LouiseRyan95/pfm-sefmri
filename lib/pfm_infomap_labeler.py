@@ -19,7 +19,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import nibabel as nib
 import numpy as np
 import scipy.io as sio
-from nibabel.cifti2.cifti2_axes import ScalarAxis
+from nibabel.cifti2.cifti2_axes import ScalarAxis, SeriesAxis
 
 EPS = 1e-8
 
@@ -65,6 +65,14 @@ def density_tag(density_col: int, density_values: Optional[Sequence[float]]) -> 
     if density_values is not None and density_col < len(density_values):
         return f"Density{format_density_value(float(density_values[density_col]))}"
     return f"Density{density_col + 1:02d}"
+
+
+def graph_density_dir_name(density_col: int, density_values: Optional[Sequence[float]]) -> str:
+    if density_values is not None and density_col < len(density_values):
+        value = format_density_value(float(density_values[density_col])).replace(".", "p")
+    else:
+        value = f"{density_col + 1:02d}"
+    return f"GraphDensity_{value}"
 
 
 def zscore_vec(x: np.ndarray) -> np.ndarray:
@@ -177,6 +185,16 @@ def save_dscalar(ref_img: nib.Cifti2Image, maps: np.ndarray, names: Sequence[str
     nib.save(nib.Cifti2Image(arr, hdr, nifti_header=ref_img.nifti_header), str(out_path))
 
 
+def save_dtseries(ref_img: nib.Cifti2Image, maps: np.ndarray, out_path: Path) -> None:
+    arr = np.asarray(maps, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr[None, :]
+    axis = ref_img.header.get_axis(1)
+    series = SeriesAxis(start=0.0, step=1.0, size=arr.shape[0], unit="SECOND")
+    hdr = nib.Cifti2Header.from_axes((series, axis))
+    nib.save(nib.Cifti2Image(arr, hdr, nifti_header=ref_img.nifti_header), str(out_path))
+
+
 def compute_community_fc_maps(
     data_tg: np.ndarray,
     comm_ts: np.ndarray,
@@ -219,7 +237,10 @@ def import_dlabel(
     tmp_prefix: Path,
 ) -> bool:
     tmp = Path(str(tmp_prefix) + ".dscalar.nii")
-    save_dscalar(ref_img, values, ["labels"], tmp)
+    arr = np.asarray(values)
+    n_maps = 1 if arr.ndim == 1 else arr.shape[0]
+    names = [f"label_{i + 1}" for i in range(n_maps)]
+    save_dscalar(ref_img, values, names, tmp)
     if not wb_available(wb_command):
         fallback = out_path.with_suffix("").with_suffix(".dscalar.nii")
         tmp.replace(fallback)
@@ -615,6 +636,10 @@ def density_label(
     n_gray = communities.size
     n_net = len(labels)
     dens_tag = density_tag(density_col, getattr(args, "density_values_parsed", None))
+    density_outdir = outdir
+    if getattr(args, "density_output_mode", "subdirs") == "subdirs":
+        density_outdir = outdir / graph_density_dir_name(density_col, getattr(args, "density_values_parsed", None))
+    density_outdir.mkdir(parents=True, exist_ok=True)
     density_value = ""
     density_values = getattr(args, "density_values_parsed", None)
     if density_values is not None and density_col < len(density_values):
@@ -664,6 +689,7 @@ def density_label(
 
     rows = []
     ambiguous = []
+    assigned_by_comm = np.zeros(community_ids.size, dtype=np.int64)
     for i, cid in enumerate(community_ids):
         r1 = int(rank[i, 0])
         r2 = int(rank[i, 1]) if n_net > 1 else r1
@@ -688,6 +714,7 @@ def density_label(
         )
         if int(args.strict_thresholding) == 1 and strict_fail:
             assigned = int(args.unassigned_value)
+        assigned_by_comm[i] = int(assigned)
         flag, reason = review_flags(
             int(sizes[i]),
             threshold_confidence,
@@ -766,22 +793,54 @@ def density_label(
         "context_support_assigned",
     ]
     for suffix, data_rows in (("CommunityTable", rows), ("AmbiguousCommunities", ambiguous)):
-        path = outdir / f"{prefix}_{dens_tag}_{suffix}.csv"
+        path = density_outdir / f"{prefix}_{dens_tag}_{suffix}.csv"
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=table_fields)
             writer.writeheader()
             writer.writerows(data_rows)
         print(f"[infomap_labeler] wrote {path}")
 
-    dlabel = outdir / f"{prefix}_{dens_tag}.dlabel.nii"
-    wrote_dlabel = import_dlabel(args.wb_command, ref_img, label_map, label_list, dlabel, outdir / f"Tmp_{prefix}_{dens_tag}")
-    save_dscalar(ref_img, conf_map, ["confidence"], outdir / f"{prefix}_{dens_tag}_Confidence.dscalar.nii")
+    dlabel = density_outdir / f"{prefix}_{dens_tag}.dlabel.nii"
+    wrote_dlabel = import_dlabel(args.wb_command, ref_img, label_map, label_list, dlabel, density_outdir / f"Tmp_{prefix}_{dens_tag}")
+    save_dscalar(ref_img, conf_map, ["confidence"], density_outdir / f"{prefix}_{dens_tag}_Confidence.dscalar.nii")
+    review_prefix = "Bipartite_PhysicalCommunities+AlgorithmicLabeling"
+    review_dlabel = density_outdir / f"{review_prefix}.dlabel.nii"
+    import_dlabel(args.wb_command, ref_img, label_map, label_list, review_dlabel, density_outdir / f"Tmp_{review_prefix}")
+
+    per_comm_label = np.zeros((community_ids.size, n_gray), dtype=np.float32)
+    for i, cid in enumerate(community_ids):
+        per_comm_label[i, communities == int(cid)] = float(assigned_by_comm[i])
+    review_comm_dlabel = density_outdir / f"{review_prefix}_InfoMapCommunities.dlabel.nii"
+    import_dlabel(
+        args.wb_command,
+        ref_img,
+        per_comm_label,
+        label_list,
+        review_comm_dlabel,
+        density_outdir / f"Tmp_{review_prefix}_InfoMapCommunities",
+    )
+
     if int(args.write_community_fc) == 1:
         fc_maps = compute_community_fc_maps(data_tg, metrics["comm_ts"], int(args.fc_chunk_rows))
         fc_names = [f"Community_{int(cid)}" for cid in community_ids]
-        fc_path = outdir / f"{prefix}_{dens_tag}_FC.dscalar.nii"
+        fc_path = density_outdir / f"{prefix}_{dens_tag}_FC.dscalar.nii"
         save_dscalar(ref_img, fc_maps, fc_names, fc_path)
+        save_dtseries(ref_img, fc_maps, density_outdir / f"{review_prefix}_FC_WholeBrain.dtseries.nii")
+        fc_between_maps = np.zeros((community_ids.size, n_gray), dtype=np.float32)
+        for i, cid in enumerate(community_ids):
+            for target_cid in community_ids:
+                target = communities == int(target_cid)
+                if np.any(target):
+                    fc_between_maps[i, target] = float(np.nanmean(fc_maps[i, target]))
+        save_dtseries(
+            ref_img,
+            fc_between_maps,
+            density_outdir / f"{review_prefix}_FC_btwn_InfoMapCommunities.dtseries.nii",
+        )
         print(f"[infomap_labeler] wrote {fc_path}")
+        print(f"[infomap_labeler] wrote {density_outdir / f'{review_prefix}_FC_WholeBrain.dtseries.nii'}")
+        print(f"[infomap_labeler] wrote {density_outdir / f'{review_prefix}_FC_btwn_InfoMapCommunities.dtseries.nii'}")
+    write_manual_correction_sheet(density_outdir, review_prefix, rows, labels, int(args.unassigned_value))
     if wrote_dlabel:
         print(f"[infomap_labeler] wrote {dlabel}")
     return label_map, rows
@@ -833,6 +892,7 @@ def main() -> int:
         default="",
         help="Graph density values in the same order as the community CIFTI columns; used for output filename tags.",
     )
+    ap.add_argument("--density-output-mode", choices=("subdirs", "flat"), default="subdirs")
     ap.add_argument("--write-community-fc", type=bool_int, default=1)
     ap.add_argument("--fc-chunk-rows", type=int, default=4096)
     ap.add_argument("--score-mode", choices=("additive", "beta_product"), default="additive")

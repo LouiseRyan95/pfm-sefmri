@@ -19,6 +19,7 @@ import numpy as np
 
 from pfm_infomap_labeler import (
     density_tag,
+    graph_density_dir_name,
     import_dlabel,
     load_priors,
     mode_consensus,
@@ -154,7 +155,8 @@ def write_applied_table(path: Path, rows: Sequence[Dict[str, object]], labels: S
 def main() -> int:
     ap = argparse.ArgumentParser(description="Apply manual corrections to PFM Infomap community labels")
     ap.add_argument("--communities-cifti", required=True)
-    ap.add_argument("--manual-corrections", required=True)
+    ap.add_argument("--manual-corrections", default="")
+    ap.add_argument("--manual-corrections-glob", default="")
     ap.add_argument("--priors-mat", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--outfile-prefix", default="InfomapNetworkLabels_ManualAdjusted")
@@ -165,6 +167,7 @@ def main() -> int:
         help="Graph density values in the same order as the community CIFTI columns; used for output filename tags.",
     )
     ap.add_argument("--unassigned-value", type=int, default=21)
+    ap.add_argument("--density-output-mode", choices=("subdirs", "flat"), default="subdirs")
     ap.add_argument("--left-surf", default="")
     ap.add_argument("--right-surf", default="")
     ap.add_argument("--wb-command", default="wb_command")
@@ -189,7 +192,16 @@ def main() -> int:
     label_list = outdir / f"{args.outfile_prefix}_LabelListFile.txt"
     write_label_list(label_list, labels, colors, int(args.unassigned_value))
 
-    rows = read_rows(Path(args.manual_corrections))
+    correction_files: List[Path] = []
+    if args.manual_corrections:
+        correction_files.append(Path(args.manual_corrections))
+    if args.manual_corrections_glob:
+        correction_files.extend(sorted(outdir.glob(args.manual_corrections_glob)))
+    if not correction_files:
+        raise ValueError("No manual correction table was provided or found")
+    rows: List[Dict[str, str]] = []
+    for table in correction_files:
+        rows.extend(read_rows(table))
     assignments, applied = build_assignments(rows, labels, int(args.unassigned_value))
     if not assignments:
         raise ValueError("No manual correction rows were found")
@@ -209,14 +221,18 @@ def main() -> int:
         for community, label in assignments.get(density, {}).items():
             label_map[communities == int(community)] = float(label)
         dens_tag = density_tag(di, density_values)
-        dlabel = outdir / f"{args.outfile_prefix}_{dens_tag}.dlabel.nii"
+        density_outdir = outdir
+        if args.density_output_mode == "subdirs":
+            density_outdir = outdir / graph_density_dir_name(di, density_values)
+            density_outdir.mkdir(parents=True, exist_ok=True)
+        dlabel = density_outdir / f"{args.outfile_prefix}_{dens_tag}.dlabel.nii"
         wrote = import_dlabel(
             args.wb_command,
             comm_img,
             label_map,
             label_list,
             dlabel,
-            outdir / f"Tmp_{args.outfile_prefix}_{dens_tag}",
+            density_outdir / f"Tmp_{args.outfile_prefix}_{dens_tag}",
         )
         if wrote:
             print(f"[infomap_manual_labels] wrote {dlabel}")

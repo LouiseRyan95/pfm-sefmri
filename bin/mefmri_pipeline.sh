@@ -50,8 +50,8 @@ fi
 : "${MEDIR:=$(cd "$SCRIPT_DIR/.." && pwd)}"
 : "${EnvironmentScript:=$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh}"
 : "${START_SESSION:=1}"
-: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
-: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
+: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
+: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
 : "${PIPELINE_SKIP_ANAT:=0}" # 0|1 (used by FUNC_DIRNAME=All parent loop to avoid rerunning anatomy per task)
 
 # Optional post-config overrides (used internally by the All-tasks driver).
@@ -76,6 +76,8 @@ fi
 : "${FUNC_CONCAT_MODULE:=$MEDIR/modules/mefmri_func_concat.sh}"
 : "${FUNC_NSI_MODULE:=$MEDIR/modules/mefmri_func_nsi.sh}"
 : "${FUNC_PFM_MODULE:=$MEDIR/modules/mefmri_func_pfm.sh}"
+: "${FUNC_PFM_INFOMAP_UPDATE_MODULE:=$MEDIR/modules/mefmri_func_pfm_infomap_update.sh}"
+: "${FUNC_CRAWLING_SEED_FC_MODULE:=$MEDIR/modules/mefmri_func_crawling_seed_fc.sh}"
 
 # Global processing knobs.
 : "${CHARM_BIN:=}" # optional explicit path passed to CHARM module
@@ -88,9 +90,11 @@ fi
 : "${CONCAT_ENABLE:=1}" # 0|1
 : "${NSI_ENABLE:=1}" # 0|1
 : "${PFM_ENABLE:=1}" # 0|1
+: "${PFM_INFOMAP_UPDATE_ENABLE:=0}" # 0|1
+: "${CRAWLING_SEED_FC_ENABLE:=0}" # 0|1
 : "${RUN_CONFIG_SNAPSHOT:=1}" # 0|1
 : "${FUNC_NOFIELDMAP_MODE:=0}" # 0|1
-: "${DISTORTION_CORRECTION_MODE:=topup}" # topup|medic|none
+: "${DISTORTION_CORRECTION_MODE:=topup}" # topup|direct_b0|medic|none
 : "${PROCESSING_MODE:=auto}" # auto|multi_echo|single_echo
 : "${MULTI_ECHO_DENOISE_METHOD:=meica}" # meica|aroma|acompcor
 : "${SINGLE_ECHO_DENOISE_METHOD:=acompcor}" # aroma|acompcor
@@ -98,7 +102,7 @@ fi
 : "${AROMA_NSI_THRESHOLD:=0.05}"
 
 case "$DISTORTION_CORRECTION_MODE" in
-  topup) ;;
+  topup|direct_b0|fieldmap|gre_fieldmap) ;;
   none)
     FUNC_NOFIELDMAP_MODE=1
     ;;
@@ -107,7 +111,7 @@ case "$DISTORTION_CORRECTION_MODE" in
     # generation. Keep the mode explicit so it cannot silently fall back to TOPUP.
     ;;
   *)
-    echo "ERROR: DISTORTION_CORRECTION_MODE must be topup, medic, or none (got '$DISTORTION_CORRECTION_MODE')" >&2
+    echo "ERROR: DISTORTION_CORRECTION_MODE must be topup, direct_b0, medic, or none (got '$DISTORTION_CORRECTION_MODE')" >&2
     exit 2
     ;;
 esac
@@ -147,8 +151,10 @@ stage_index() {
     mgtr) echo 70 ;;
     vol2surf) echo 80 ;;
     concat) echo 90 ;;
+    fc_movie|crawling_seed_fc) echo 95 ;;
     nsi) echo 100 ;;
     pfm) echo 110 ;;
+    pfm_update|infomap_update) echo 115 ;;
     *)
       echo "ERROR: invalid module tag: $1" >&2
       return 1
@@ -692,6 +698,8 @@ if [[ "${RUN_CONFIG_SNAPSHOT}" == "1" ]]; then
     echo "concat_enable=${CONCAT_ENABLE}"
     echo "nsi_enable=${NSI_ENABLE}"
     echo "pfm_enable=${PFM_ENABLE}"
+    echo "pfm_infomap_update_enable=${PFM_INFOMAP_UPDATE_ENABLE}"
+    echo "crawling_seed_fc_enable=${CRAWLING_SEED_FC_ENABLE}"
   } > "$RUN_META_FILE"
   echo "Run metadata snapshot: $RUN_META_FILE"
 fi
@@ -748,7 +756,12 @@ if should_run_stage "fieldmaps"; then
     topup)
       [ -f "$FUNC_FIELDMAPS_MODULE" ] || { echo "ERROR: missing module: $FUNC_FIELDMAPS_MODULE"; exit 2; }
       [ -x "$FUNC_FIELDMAPS_MODULE" ] || chmod +x "$FUNC_FIELDMAPS_MODULE"
-      run_module "fieldmaps" bash "$FUNC_FIELDMAPS_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME"
+      run_module "fieldmaps" env FIELDMAP_STRATEGY=topup bash "$FUNC_FIELDMAPS_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME"
+      ;;
+    direct_b0|fieldmap|gre_fieldmap)
+      [ -f "$FUNC_FIELDMAPS_MODULE" ] || { echo "ERROR: missing module: $FUNC_FIELDMAPS_MODULE"; exit 2; }
+      [ -x "$FUNC_FIELDMAPS_MODULE" ] || chmod +x "$FUNC_FIELDMAPS_MODULE"
+      run_module "fieldmaps" env FIELDMAP_STRATEGY=direct_b0 bash "$FUNC_FIELDMAPS_MODULE" "$MEDIR" "$Subject" "$StudyFolder" "$THREADS_FIELDMAPS" "$START_SESSION" "$FUNC_DIRNAME"
       ;;
     none)
       echo "Skipping fieldmap estimation (DISTORTION_CORRECTION_MODE=none; FUNC_NOFIELDMAP_MODE=1)"
@@ -896,6 +909,20 @@ if [[ "${CONCAT_ENABLE}" == "1" ]]; then
   fi
 fi
 
+if [[ "${CRAWLING_SEED_FC_ENABLE}" == "1" ]]; then
+  if should_run_stage "fc_movie"; then
+    print_section "Generating crawling seed FC movie"
+    [ -f "$FUNC_CRAWLING_SEED_FC_MODULE" ] || { echo "ERROR: missing module: $FUNC_CRAWLING_SEED_FC_MODULE"; exit 2; }
+    run_module "fc_movie" bash "$FUNC_CRAWLING_SEED_FC_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+    if [[ "$STOP_AFTER_MODULE" == "fc_movie" || "$STOP_AFTER_MODULE" == "crawling_seed_fc" ]]; then
+      echo "Stopping after fc_movie (STOP_AFTER_MODULE=${STOP_AFTER_MODULE})"
+      exit 0
+    fi
+  else
+    echo "Skipping crawling seed FC movie (START_FROM_MODULE=${START_FROM_MODULE})"
+  fi
+fi
+
 if [[ "${NSI_ENABLE}" == "1" ]]; then
   if should_run_stage "nsi"; then
     print_section "Running NSI module"
@@ -921,5 +948,19 @@ if [[ "${PFM_ENABLE}" == "1" ]]; then
     fi
   else
     echo "Skipping pfm (START_FROM_MODULE=${START_FROM_MODULE})"
+  fi
+fi
+
+if [[ "${PFM_INFOMAP_UPDATE_ENABLE}" == "1" ]]; then
+  if should_run_stage "pfm_update"; then
+    print_section "Applying Infomap manual updates"
+    [ -f "$FUNC_PFM_INFOMAP_UPDATE_MODULE" ] || { echo "ERROR: missing module: $FUNC_PFM_INFOMAP_UPDATE_MODULE"; exit 2; }
+    run_module "pfm_update" bash "$FUNC_PFM_INFOMAP_UPDATE_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+    if [[ "$STOP_AFTER_MODULE" == "pfm_update" || "$STOP_AFTER_MODULE" == "infomap_update" ]]; then
+      echo "Stopping after pfm_update (STOP_AFTER_MODULE=${STOP_AFTER_MODULE})"
+      exit 0
+    fi
+  else
+    echo "Skipping Infomap manual update (START_FROM_MODULE=${START_FROM_MODULE})"
   fi
 fi

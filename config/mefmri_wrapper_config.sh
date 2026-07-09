@@ -15,7 +15,8 @@
 #     SubcorticalPriors.nii.gz, and template/resource files under res0urces/.
 #   - Confirm conda environments or executable paths for tedana/ME-ICA,
 #     ICA-AROMA, and experimental MEDIC/warpkit if those branches are used.
-#   - Replace explicit executable overrides when using external tools.
+#   - Replace explicit tool overrides such as AROMA_BIN_OVERRIDE when using
+#     ICA-AROMA.
 #
 # Organization:
 #   1) Core paths and environment
@@ -29,7 +30,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MEDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 EnvironmentScript="$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh"
-CHARM_BIN="/path/to/SimNIBS/bin/charm"
+CHARM_BIN="/home/charleslynch/SimNIBS-4.5/bin/charm"
 
 # Repository resources used by downstream modules. Leave these repository-
 # relative defaults unless your resource bundle lives somewhere else.
@@ -40,33 +41,36 @@ PIPELINE_PYTHON="python3"
 # =============================================================================
 # 2) Commonly Used Global Knobs
 # =============================================================================
-# Resume / routing
+# Resume / routing. Leave START_FROM_MODULE at validate for a fresh run.
 START_SESSION=1
-START_FROM_MODULE="anat_charm"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm
-STOP_AFTER_MODULE="pfm"          # "" to run full chain
+START_FROM_MODULE="validate"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
+STOP_AFTER_MODULE=""           # "" to run full chain
 
 # Functional naming and reference space
-FUNC_DIRNAME="rest"              # task folder name under func/unprocessed/ (rest is conventional; any task name is valid)
+FUNC_DIRNAME="rest"              # task folder under func/unprocessed/; use "All" to loop over discovered tasks
 FUNC_FILE_PREFIX="Rest"
-FUNC_XFMS_DIRNAME=""             # empty => follow FUNC_DIRNAME; set explicitly only for shared xfm namespaces
+FUNC_XFMS_DIRNAME=""             # empty => follow FUNC_DIRNAME; set explicitly only if you need a shared xfm namespace
 DOF=6
 AtlasTemplate="$MEDIR/res0urces/MNI152_T1_2mm.nii.gz"
 AtlasSpace="T1w"                 # T1w|MNINonlinear
 APPLY_N4_BIAS=0                  # 0|1 ; usually leave off if prescan normalize was enabled
 
-# Global pipeline behavior
+# Global pipeline behavior. PROCESSING_MODE=auto chooses single_echo when fewer
+# than three echoes are present, otherwise multi_echo.
 RUN_CONFIG_SNAPSHOT=1            # 1 writes effective run metadata snapshot into func/<FUNC_DIRNAME>/qa
 VALIDATE_ECHO_DIM4_POLICY="error" # error|warn
 FUNC_NOFIELDMAP_MODE=0           # 0|1: functional-only fallback mode with zero-unwarp placeholders
-PROCESSING_MODE="auto"           # auto|multi_echo|single_echo
+PROCESSING_MODE="auto"          # auto|multi_echo|single_echo
 MULTI_ECHO_DENOISE_METHOD="meica" # meica|aroma|acompcor
 SINGLE_ECHO_DENOISE_METHOD="acompcor" # aroma|acompcor
-SINGLE_ECHO_ECHO_INDEX=1         # fallback/source echo used for single-echo denoising
+SINGLE_ECHO_ECHO_INDEX=1        # fallback/source echo used for single-echo denoising
+AROMA_NSI_THRESHOLD=0.05        # fixed NSI kill threshold for ICA-AROMA component screening
 CONCAT_ENABLE=1
 NSI_ENABLE=1
 PFM_ENABLE=1
+CRAWLING_SEED_FC_ENABLE=0
 
-# Threading
+# Threading defaults used by modules that support parallelism.
 THREADS_DEFAULT=8
 THREADS_ANAT_HCP="$THREADS_DEFAULT"
 THREADS_FIELDMAPS="$THREADS_DEFAULT"
@@ -98,16 +102,19 @@ CHARM_WRITE_CORTICAL_RIBBON=1           # 1 writes anat/T1w/CorticalRibbon.nii.g
 # -----------------------------------------------------------------------------
 # 3b) Functional Distortion Correction / Coreg / Headmotion
 # -----------------------------------------------------------------------------
-DISTORTION_CORRECTION_MODE="topup" # topup|medic|none ; MEDIC/warpkit support is experimental
+DISTORTION_CORRECTION_MODE="topup" # topup|direct_b0|medic|none ; MEDIC/warpkit support is experimental
 FM_PE_MODE="infer"               # infer|config
 FM_AP_PE_DIR=""                  # e.g. j-
 FM_PA_PE_DIR=""                  # e.g. j
 EPIREG_PEDIR=""                  # empty => infer from PE.txt
 SCAN_SPECIFIC_FM=1
+FM_DIRECT_B0_DELTA_TE_MS=2.65    # fsl_prepare_fieldmap delta TE for direct B0/gradient-echo maps
+FM_DIRECT_B0_PHASE_PATTERN="FieldMap_S*_R*.nii.gz,*_phasediff.nii.gz"
+FM_DIRECT_B0_MAG_PATTERN="Mag_S*_R*.nii.gz,*_magnitude1.nii.gz"
 HEADMOTION_KEEP_MCF=0
-SBREF_FALLBACK_SKIP_TRS=10       # used only when no real SBRef exists; also written to rmVols.txt
-SBREF_REORIENT_TO_STD=1          # 1 runs fslreorient2std on real/fallback SBRefs before coreg
-SBREF_ECHO_COMBINATION="mean"    # mean|sos|t2s|paid|first|last; used by topup, medic, and no-fieldmap SBRefs
+SBREF_FALLBACK_SKIP_TRS=10       # used only when no real SBref exists; also written to rmVols.txt
+SBREF_REORIENT_TO_STD=1          # 1 runs fslreorient2std on real/fallback SBrefs before coreg
+SBREF_ECHO_COMBINATION="mean"    # mean|sos|t2s|paid|first|last; used by topup, medic, and no-fieldmap coreg SBRefs
 SBREF_MAX_TE_MS=60               # echo SBRefs with TE < this value are included; set to none to include all echoes
 SBREF_T2SMAP_MASK_THR=1          # temporary nonzero mask threshold for t2s/paid SBRef combination
 SBREF_T2SMAP_THREADS=1           # tedana t2smap threads for t2s/paid SBRef combination
@@ -115,7 +122,7 @@ SBREF_KEEP_INTERMEDIATES=0       # 1 keeps SBRef combination scratch folders for
 FUNC_REORIENT_TO_STD=1           # 1 runs fslreorient2std on copied echo timeseries before mcflirt
 
 # Experimental MEDIC/warpkit runtime. Keep this separate from TEDANA_ENV so
-# tedana's tested Python stack remains stable while warpkit can use its own env.
+# tedana's tested Python stack remains stable while warpkit can use Python >=3.11.
 WARPKIT_ENV="warpkit_env"         # conda environment expected to provide wk-medic and related wk-* CLIs
 WARPKIT_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
 WARPKIT_MEDIC_BIN="wk-medic"
@@ -140,7 +147,7 @@ VOL2SURF_CIFTI_STAMP=""          # optional non-canonical suffix for experimenta
 # -----------------------------------------------------------------------------
 # 3d) Tedana / MEICA / Reclassify
 # -----------------------------------------------------------------------------
-TEDANA_ENV="mefmri_env"          # conda environment used for tedana
+TEDANA_ENV="mefmri_env"          # conda environment used for tedana/ME-ICA
 TEDANA_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
 TEDANA_COMPAT_MODE="modern"
 MEPCA="350"
@@ -162,10 +169,16 @@ MEICA_ORIG_ALIAS_ENABLE=1        # 1 creates legacy/orig filename aliases
 # -----------------------------------------------------------------------------
 # 3e) ICA-AROMA
 # -----------------------------------------------------------------------------
-AROMA_ENV="aroma"                # conda environment used only when an AROMA branch is selected
+AROMA_ENV="aroma"                # conda environment used for ICA-AROMA
+AROMA_BIN_OVERRIDE="/home/charleslynch/aroma/ICA_AROMA.py"
+AROMA_PYTHON="python"
 AROMA_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
-AROMA_BIN_OVERRIDE=""            # optional explicit path, e.g. /path/to/ICA_AROMA.py
-AROMA_NSI_THRESHOLD=0.05
+AROMA_PARALLEL_JOBS=4
+AROMA_OUT_SUBDIR="Aroma"
+AROMA_OVERWRITE=1                # 0|1
+AROMA_PLOT_REPORTS=0             # 0|1
+AROMA_FEATURES_OUTPUT=1          # 0|1
+AROMA_CLEAN_TYPE="nonaggr"       # nonaggr|aggr
 
 # -----------------------------------------------------------------------------
 # 3f) Concat
@@ -190,7 +203,7 @@ NSI_RELIABILITY_MODEL=0
 # -----------------------------------------------------------------------------
 # 3h) PFM
 # -----------------------------------------------------------------------------
-PFM_STRATEGY="ridge_fusion"           # ridge_fusion | infomap
+PFM_STRATEGY="ridge_fusion"      # ridge_fusion | infomap
 PFM_PYTHON="$PIPELINE_PYTHON"
 PFM_INPUT_CIFTI=""               # empty => derive from concat outputs below
 PFM_INPUT_TAG=""                 # empty => derive from CONCAT_INPUT_TAG
@@ -198,10 +211,50 @@ PFM_CONCAT_OUT_SUBDIR="$CONCAT_OUT_SUBDIR"
 PFM_FD_THRESHOLD="$CONCAT_FD_THRESHOLD"
 PFM_DISTANCE_MATRIX=""           # empty => <SubjectDir>/anat/T1w/fsaverage_LR32k/DistanceMatrix.npy
 PFM_DISTANCE_BUILD_IF_MISSING=1
-PFM_DISTANCE_CORTEX_MODE="hybrid"      # hybrid uses geodesic surface distances, with local Euclidean fallback
-PFM_DISTANCE_EUCLIDEAN_OVERRIDE_MM=5   # hybrid only: use Euclidean distance for same-hemi cortical pairs this close
+PFM_DISTANCE_CORTEX_MODE="hybrid"      # geodesic | hybrid | euclidean
+PFM_DISTANCE_EUCLIDEAN_OVERRIDE_MM=5 # hybrid only: use 3D Euclidean distance for same-hemi cortical pairs this close
 PFM_OUTDIR=""                    # empty => <SubjectDir>/func/<FUNC_DIRNAME>/PFM
 PFM_PREP_DIR=""                  # empty => <PFM_OUTDIR>/prep
+
+# Optional post-PFM manual update pass. This scans per-density review tables and
+# updates labeled density and consensus outputs without rerunning Infomap.
+PFM_INFOMAP_UPDATE_ENABLE=0
+PFM_INFOMAP_UPDATE_TABLE_GLOB="GraphDensity_*/Bipartite_PhysicalCommunities+AlgorithmicLabeling_ManualCorrections.csv"
+PFM_INFOMAP_UPDATE_OUTFILE="InfomapNetworkLabels_ManualAdjusted"
+
+# Optional homogeneity/spin-null diagnostics. A rotation-index CIFTI should use
+# 1-based source indices in cortex rows, with 0 for unmapped vertices.
+PFM_HOMOGENEITY_TEST_ENABLE=0
+PFM_HOMOGENEITY_ROTATIONS_CIFTI="$MEDIR/res0urces/Rotated_inds.dtseries.nii"
+PFM_HOMOGENEITY_N_ROTATIONS=100
+PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE=5
+PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY=1000
+PFM_HOMOGENEITY_ALPHA=0.05
+
+# -----------------------------------------------------------------------------
+# 3i) Crawling Seed FC Movie QC
+# -----------------------------------------------------------------------------
+CRAWLING_SEED_FC_INPUT_CIFTI=""          # empty => final concatenated CIFTI
+CRAWLING_SEED_FC_INPUT_TAG=""            # empty => CONCAT_INPUT_TAG
+CRAWLING_SEED_FC_OUTDIR=""               # empty => func/<FUNC_DIRNAME>/qa/CrawlingSeedFC
+CRAWLING_SEED_FC_WB_SURFER2=""           # direct path to wb_surfer2; overrides conda env
+CRAWLING_SEED_FC_WB_SURFER2_CONDA_ENV="wbsurfer_env"
+CRAWLING_SEED_FC_SCENE_TEMPLATE="$MEDIR/res0urces/CrawlingSeedFC/FlatMaps+Inflated.scene"
+CRAWLING_SEED_FC_VERTICES="$MEDIR/res0urces/CrawlingSeedFC/VerticesToSample.txt"
+CRAWLING_SEED_FC_TEMPLATE_SUBJECT="sub-ME01"
+CRAWLING_SEED_FC_SURFACE_RESOURCE_DIR="" # empty => anat/T1w or anat/MNINonLinear fsaverage_LR32k from AtlasSpace
+CRAWLING_SEED_FC_SURFACE_SUBJECT_PREFIX="" # empty => infer from subject surface filenames
+CRAWLING_SEED_FC_FLAT_SURFACE_RESOURCE_DIR="" # empty => anat/MNINonLinear/fsaverage_LR32k for T1w flatmaps
+CRAWLING_SEED_FC_FLAT_SURFACE_SUBJECT_PREFIX="" # empty => subject ID
+CRAWLING_SEED_FC_WIDTH=1280
+CRAWLING_SEED_FC_HEIGHT=720
+CRAWLING_SEED_FC_FRAMERATE=10
+CRAWLING_SEED_FC_NUM_CPUS="$THREADS_DEFAULT"
+CRAWLING_SEED_FC_TARGET_SIZE_MB=10
+CRAWLING_SEED_FC_FORCE=0
+CRAWLING_SEED_FC_FORCE_DCONN=0
+CRAWLING_SEED_FC_SKIP_MOVIE=0
+CRAWLING_SEED_FC_KEEP_DCONN=0
 
 # =============================================================================
 # 4) Advanced / Rarely Changed Knobs
@@ -215,9 +268,6 @@ ANAT_HCP_MODULE="$MEDIR/modules/mefmri_anat_hcp.sh"
 ANAT_CHARM_MODULE="$MEDIR/modules/mefmri_anat_charm.sh"
 FUNC_FIELDMAPS_MODULE="$MEDIR/modules/mefmri_func_fieldmaps.sh"
 FUNC_MEDIC_MODULE="$MEDIR/modules/mefmri_func_medic.sh"
-FUNC_MEDIC_REFERENCE_MODULE="$MEDIR/modules/mefmri_func_medic_reference.sh"
-FUNC_MEDIC_COREG_MODULE="$MEDIR/modules/mefmri_func_coreg_medic.sh"
-FUNC_MEDIC_HEADMOTION_MODULE="$MEDIR/modules/mefmri_func_headmotion_medic.sh"
 FUNC_COREG_MODULE="$MEDIR/modules/mefmri_func_coreg.sh"
 FUNC_HEADMOTION_MODULE="$MEDIR/modules/mefmri_func_headmotion.sh"
 FUNC_MEICA_MODULE="$MEDIR/modules/mefmri_func_meica.sh"
@@ -229,11 +279,13 @@ FUNC_VOL2SURF_MODULE="$MEDIR/modules/mefmri_func_vol2surf.sh"
 FUNC_CONCAT_MODULE="$MEDIR/modules/mefmri_func_concat.sh"
 FUNC_NSI_MODULE="$MEDIR/modules/mefmri_func_nsi.sh"
 FUNC_PFM_MODULE="$MEDIR/modules/mefmri_func_pfm.sh"
+FUNC_PFM_INFOMAP_UPDATE_MODULE="$MEDIR/modules/mefmri_func_pfm_infomap_update.sh"
+FUNC_CRAWLING_SEED_FC_MODULE="$MEDIR/modules/mefmri_func_crawling_seed_fc.sh"
 
 # -----------------------------------------------------------------------------
 # 4b) Vol2Surf GoodVoxels / Masking Details
 # -----------------------------------------------------------------------------
-VOL2SURF_USE_GOOD_VOXELS_MASK=1
+VOL2SURF_USE_GOOD_VOXELS_MASK=0
 VOL2SURF_GOOD_VOXELS_FACTOR="0.5"
 VOL2SURF_GOOD_VOXELS_SIGMA_MM="5"
 VOL2SURF_GOOD_VOXELS_KEEP_INTERMEDIATES=1
@@ -247,7 +299,6 @@ MEDIC_NOISE_FRAMES=0              # trailing frames to trim before MEDIC, passed
 MEDIC_DEBUG=0                     # 1 passes --debug to wk-medic
 MEDIC_WRAP_LIMIT=0                # 1 passes --wrap-limit to wk-medic
 MEDIC_COMPUTE_JACOBIAN=1          # 1 also writes per-frame Jacobian maps
-MEDIC_REFERENCE_POLICY="first"    # first|motion_reference|median|mean displacement frame for coreg references
 
 # -----------------------------------------------------------------------------
 # 4d) Tedana Detailed Options

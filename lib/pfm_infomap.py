@@ -16,7 +16,7 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Tuple
 
 import nibabel as nib
 import numpy as np
@@ -54,6 +54,10 @@ def parse_num_list_or_colon(expr: str, as_int: bool = False) -> List[float]:
 
 def format_density(d: float) -> str:
     return f"{d:.15g}"
+
+
+def graph_density_dir_name(d: float) -> str:
+    return "GraphDensity_" + format_density(float(d)).replace(".", "p")
 
 
 def normalize_structure_name(name: str) -> str:
@@ -223,6 +227,7 @@ def main() -> int:
     ap.add_argument("--num-cores", type=int, default=1)
     ap.add_argument("--infomap-binary", default="infomap")
     ap.add_argument("--min-community-size", type=int, default=10)
+    ap.add_argument("--density-subdirs", type=int, choices=(0, 1), default=1)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -301,9 +306,11 @@ def main() -> int:
 
     for di, dens in enumerate(densities):
         dstr = format_density(float(dens))
-        net_path = outdir / f"Bipartite_Density{dstr}.net"
-        clu_path = outdir / f"Bipartite_Density{dstr}.clu"
-        log_path = outdir / f"Bipartite_Density{dstr}_LogFile_{ts}.txt"
+        density_dir = outdir / graph_density_dir_name(float(dens)) if int(args.density_subdirs) == 1 else outdir
+        density_dir.mkdir(parents=True, exist_ok=True)
+        net_path = density_dir / f"Bipartite_Density{dstr}.net"
+        clu_path = density_dir / f"Bipartite_Density{dstr}.clu"
+        log_path = density_dir / f"Bipartite_Density{dstr}_LogFile_{ts}.txt"
 
         conn = build_connection_matrix(fc, float(dens))
         n_edges = write_pajek(net_path, fc, conn)
@@ -311,7 +318,7 @@ def main() -> int:
 
         net_paths.append(net_path)
         clu_paths.append(clu_path)
-        tasks.append((args.infomap_binary, net_path, outdir, int(reps[di]), log_path))
+        tasks.append((args.infomap_binary, net_path, density_dir, int(reps[di]), log_path))
 
     if args.num_cores > 1 and len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=int(args.num_cores)) as ex:

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build PFM distance matrix (pure Python + wb_command).
 
-Distance model (single default):
-- Cortex within hemisphere: geodesic distance on midthickness surface
+Distance model:
+- Cortex within hemisphere: geodesic distance on midthickness surface by default,
+  with optional short-range 3D Euclidean override for nearby sulcal banks
 - Cortex across hemispheres: Euclidean distance in 3D
 - Subcortex to all grayordinates: Euclidean distance in 3D
 
@@ -84,6 +85,29 @@ def dconn_to_uint8_submatrix(dconn_path: Path, row_verts: np.ndarray, col_verts:
     return to_uint8_dist(sub)
 
 
+def fill_same_hemi_euclidean(
+    D: np.ndarray,
+    idx: np.ndarray,
+    coords: np.ndarray,
+    chunk: int,
+    override_mm: float,
+    replace_all: bool,
+) -> None:
+    xyz = coords[idx]
+    for i in range(0, idx.size, chunk):
+        j = min(i + chunk, idx.size)
+        rows = idx[i:j]
+        d = np.linalg.norm(xyz[i:j, None, :] - xyz[None, :, :], axis=2)
+        du = to_uint8_dist(d)
+        if replace_all:
+            D[np.ix_(rows, idx)] = du
+        else:
+            block = D[np.ix_(rows, idx)]
+            mask = d <= float(override_mm)
+            block[mask] = np.minimum(block[mask], du[mask])
+            D[np.ix_(rows, idx)] = block
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build PFM distance matrix with geodesic+euclidean defaults")
     ap.add_argument("--ref-cifti", required=True)
@@ -91,6 +115,16 @@ def main() -> int:
     ap.add_argument("--right-surf", required=True)
     ap.add_argument("--out-npy", required=True)
     ap.add_argument("--chunk-rows", type=int, default=128)
+    ap.add_argument(
+        "--cortex-distance-mode",
+        choices=("geodesic", "hybrid", "euclidean"),
+        default="hybrid",
+        help=(
+            "Within-hemisphere cortical distance model. hybrid uses geodesic distances except "
+            "for very short 3D Euclidean separations controlled by --euclidean-override-mm."
+        ),
+    )
+    ap.add_argument("--euclidean-override-mm", type=float, default=5.0)
     args = ap.parse_args()
 
     ref_cifti = Path(args.ref_cifti)
@@ -120,8 +154,17 @@ def main() -> int:
         D[np.ix_(left_idx, left_idx)] = dconn_to_uint8_submatrix(l_dconn, left_vert, left_vert)
         D[np.ix_(right_idx, right_idx)] = dconn_to_uint8_submatrix(r_dconn, right_vert, right_vert)
 
-    print("[dist] filling cortex cross-hemisphere Euclidean block")
     chunk = int(args.chunk_rows)
+    if args.cortex_distance_mode == "euclidean":
+        print("[dist] replacing same-hemisphere cortical blocks with 3D Euclidean distance")
+        fill_same_hemi_euclidean(D, left_idx, coords, chunk, float(args.euclidean_override_mm), replace_all=True)
+        fill_same_hemi_euclidean(D, right_idx, coords, chunk, float(args.euclidean_override_mm), replace_all=True)
+    elif args.cortex_distance_mode == "hybrid" and float(args.euclidean_override_mm) > 0:
+        print(f"[dist] applying same-hemisphere cortical Euclidean override <= {float(args.euclidean_override_mm)} mm")
+        fill_same_hemi_euclidean(D, left_idx, coords, chunk, float(args.euclidean_override_mm), replace_all=False)
+        fill_same_hemi_euclidean(D, right_idx, coords, chunk, float(args.euclidean_override_mm), replace_all=False)
+
+    print("[dist] filling cortex cross-hemisphere Euclidean block")
     lxyz = coords[left_idx]
     rxyz = coords[right_idx]
     for i in range(0, left_idx.size, chunk):
@@ -158,4 +201,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

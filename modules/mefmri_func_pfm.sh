@@ -13,7 +13,12 @@ SubjectDir="${StudyFolder}/${Subject}"
 PFM_STRATEGY="${PFM_STRATEGY:-ridge_fusion}"
 PFM_PYTHON="${PFM_PYTHON:-${PIPELINE_PYTHON:-python3}}"
 PFM_RESOURCES_ROOT="${PFM_RESOURCES_ROOT:-${MEDIR}/res0urces}"
-PFM_OUTDIR="${PFM_OUTDIR:-${SubjectDir}/func/${FuncDirName}/PFM}"
+PFM_ROOT_DIR="${PFM_OUTDIR:-${SubjectDir}/func/${FuncDirName}/PFM}"
+if [[ "$PFM_STRATEGY" == "ridge_fusion" ]]; then
+  PFM_OUTDIR="${PFM_ROOT_DIR}/RidgeFusion"
+else
+  PFM_OUTDIR="${PFM_ROOT_DIR}/Infomap"
+fi
 PFM_PREP_DIR="${PFM_PREP_DIR:-}"
 PFM_INPUT_CIFTI="${PFM_INPUT_CIFTI:-}"
 PFM_INPUT_TAG="${PFM_INPUT_TAG:-${CONCAT_INPUT_TAG:-OCME+MEICA+MGTR}}"
@@ -72,6 +77,15 @@ PFM_INFOMAP_LABEL_FC_CHUNK_ROWS="${PFM_INFOMAP_LABEL_FC_CHUNK_ROWS:-4096}"
 PFM_INFOMAP_MANUAL_LABEL_APPLY_ENABLE="${PFM_INFOMAP_MANUAL_LABEL_APPLY_ENABLE:-0}"
 PFM_INFOMAP_MANUAL_LABEL_TABLE="${PFM_INFOMAP_MANUAL_LABEL_TABLE:-}"
 PFM_INFOMAP_MANUAL_LABEL_OUTFILE="${PFM_INFOMAP_MANUAL_LABEL_OUTFILE:-${PFM_INFOMAP_LABEL_OUTFILE}_ManualAdjusted}"
+PFM_INFOMAP_UPDATE_ENABLE="${PFM_INFOMAP_UPDATE_ENABLE:-0}"
+PFM_INFOMAP_UPDATE_TABLE_GLOB="${PFM_INFOMAP_UPDATE_TABLE_GLOB:-GraphDensity_*/Bipartite_PhysicalCommunities+AlgorithmicLabeling_ManualCorrections.csv}"
+PFM_INFOMAP_UPDATE_OUTFILE="${PFM_INFOMAP_UPDATE_OUTFILE:-InfomapNetworkLabels_ManualAdjusted}"
+PFM_HOMOGENEITY_TEST_ENABLE="${PFM_HOMOGENEITY_TEST_ENABLE:-0}"
+PFM_HOMOGENEITY_ROTATIONS_CIFTI="${PFM_HOMOGENEITY_ROTATIONS_CIFTI:-${PFM_RESOURCES_ROOT}/Rotated_inds.dtseries.nii}"
+PFM_HOMOGENEITY_N_ROTATIONS="${PFM_HOMOGENEITY_N_ROTATIONS:-1000}"
+PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE="${PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE:-5}"
+PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY="${PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY:-1000}"
+PFM_HOMOGENEITY_ALPHA="${PFM_HOMOGENEITY_ALPHA:-0.05}"
 
 if [[ "$PFM_STRATEGY" != "ridge_fusion" && "$PFM_STRATEGY" != "infomap" ]]; then
   echo "ERROR: PFM_STRATEGY must be ridge_fusion or infomap (got: $PFM_STRATEGY)"
@@ -210,6 +224,7 @@ else
     --num-reps "$PFM_INFOMAP_NUM_REPS_EXPR"
     --min-distance "$PFM_INFOMAP_MIN_DISTANCE"
     --num-cores "$PFM_INFOMAP_NUM_CORES"
+    --density-subdirs 1
   )
   if [[ -n "$PFM_INFOMAP_BINARY" ]]; then
     INFOMAP_ARGS+=( --infomap-binary "$PFM_INFOMAP_BINARY" )
@@ -247,18 +262,25 @@ else
       --strict-thresholding "$PFM_INFOMAP_LABEL_STRICT_THRESHOLDING" \
       --left-surf "$L_MID" \
       --right-surf "$R_MID" \
-        --wb-command "$PFM_INFOMAP_LABEL_WB_COMMAND"
+      --wb-command "$PFM_INFOMAP_LABEL_WB_COMMAND" \
+      --density-output-mode subdirs
       PFM_NETWORK_DLABEL="${PFM_OUTDIR}/${PFM_INFOMAP_LABEL_OUTFILE}_ModeConsensus.dlabel.nii"
 
     if [[ "$PFM_INFOMAP_MANUAL_LABEL_APPLY_ENABLE" == "1" ]]; then
       if [[ -z "$PFM_INFOMAP_MANUAL_LABEL_TABLE" ]]; then
-        PFM_INFOMAP_MANUAL_LABEL_TABLE="${PFM_OUTDIR}/${PFM_INFOMAP_LABEL_OUTFILE}_ManualCorrections.csv"
+        PFM_INFOMAP_MANUAL_LABEL_TABLE=""
       fi
-      [[ -f "$PFM_INFOMAP_MANUAL_LABEL_TABLE" ]] || { echo "ERROR: missing Infomap manual correction table: $PFM_INFOMAP_MANUAL_LABEL_TABLE"; exit 2; }
-      echo "[pfm] applying manual infomap network label corrections from $PFM_INFOMAP_MANUAL_LABEL_TABLE"
+      echo "[pfm] applying manual infomap network label corrections"
+      MANUAL_ARGS=()
+      if [[ -n "$PFM_INFOMAP_MANUAL_LABEL_TABLE" ]]; then
+        [[ -f "$PFM_INFOMAP_MANUAL_LABEL_TABLE" ]] || { echo "ERROR: missing Infomap manual correction table: $PFM_INFOMAP_MANUAL_LABEL_TABLE"; exit 2; }
+        MANUAL_ARGS+=( --manual-corrections "$PFM_INFOMAP_MANUAL_LABEL_TABLE" )
+      else
+        MANUAL_ARGS+=( --manual-corrections-glob "$PFM_INFOMAP_UPDATE_TABLE_GLOB" )
+      fi
       "$PFM_PYTHON" "$MEDIR/lib/pfm_infomap_manual_labels.py" \
         --communities-cifti "${PFM_OUTDIR}/Bipartite_PhysicalCommunities.dtseries.nii" \
-        --manual-corrections "$PFM_INFOMAP_MANUAL_LABEL_TABLE" \
+        "${MANUAL_ARGS[@]}" \
         --priors-mat "$PFM_PRIORS_MAT" \
         --outdir "$PFM_OUTDIR" \
         --outfile-prefix "$PFM_INFOMAP_MANUAL_LABEL_OUTFILE" \
@@ -267,11 +289,48 @@ else
         --unassigned-value "$PFM_INFOMAP_LABEL_UNASSIGNED_VALUE" \
         --left-surf "$L_MID" \
         --right-surf "$R_MID" \
-        --wb-command "$PFM_INFOMAP_LABEL_WB_COMMAND"
+        --wb-command "$PFM_INFOMAP_LABEL_WB_COMMAND" \
+        --density-output-mode subdirs
       PFM_NETWORK_DLABEL="${PFM_OUTDIR}/${PFM_INFOMAP_MANUAL_LABEL_OUTFILE}_ModeConsensus.dlabel.nii"
     fi
   fi
   PFM_AREAL_DISTANCE_MATRIX="$PFM_INFOMAP_DISTANCE_MATRIX"
+fi
+
+if [[ "$PFM_HOMOGENEITY_TEST_ENABLE" == "1" ]]; then
+  HOMOG_ROT_ARGS=()
+  if [[ -f "$PFM_HOMOGENEITY_ROTATIONS_CIFTI" ]]; then
+    HOMOG_ROT_ARGS=( --rotations-cifti "$PFM_HOMOGENEITY_ROTATIONS_CIFTI" --n-rotations "$PFM_HOMOGENEITY_N_ROTATIONS" )
+  else
+    echo "[pfm] homogeneity rotations not found; running observed-only: $PFM_HOMOGENEITY_ROTATIONS_CIFTI"
+    HOMOG_ROT_ARGS=( --n-rotations 0 )
+  fi
+  if [[ "$PFM_STRATEGY" == "infomap" ]]; then
+    echo "[pfm] running Infomap density homogeneity diagnostics"
+    "$PFM_PYTHON" "$MEDIR/lib/pfm_homogeneity_test.py" \
+      --in-cifti "$PFM_INPUT_CIFTI" \
+      --labels-cifti "${PFM_OUTDIR}/Bipartite_PhysicalCommunities.dtseries.nii" \
+      --outdir "${PFM_OUTDIR}/HomogeneityTest" \
+      --density-values "$PFM_INFOMAP_GRAPH_DENSITIES_EXPR" \
+      --min-community-size "$PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE" \
+      --max-members-per-community "$PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY" \
+      --alpha "$PFM_HOMOGENEITY_ALPHA" \
+      --outfile-prefix "InfomapDensityHomogeneity" \
+      --title "Infomap density homogeneity" \
+      "${HOMOG_ROT_ARGS[@]}"
+  elif [[ -n "$PFM_NETWORK_DLABEL" && -f "$PFM_NETWORK_DLABEL" ]]; then
+    echo "[pfm] running Ridge-Fusion homogeneity diagnostics"
+    "$PFM_PYTHON" "$MEDIR/lib/pfm_homogeneity_test.py" \
+      --in-cifti "$PFM_INPUT_CIFTI" \
+      --labels-cifti "$PFM_NETWORK_DLABEL" \
+      --outdir "${PFM_OUTDIR}/HomogeneityTest" \
+      --min-community-size "$PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE" \
+      --max-members-per-community "$PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY" \
+      --alpha "$PFM_HOMOGENEITY_ALPHA" \
+      --outfile-prefix "RidgeFusionHomogeneity" \
+      --title "Ridge-Fusion homogeneity" \
+      "${HOMOG_ROT_ARGS[@]}"
+  fi
 fi
 
 if [[ "$PFM_AREAL_ENABLE" == "1" ]]; then
