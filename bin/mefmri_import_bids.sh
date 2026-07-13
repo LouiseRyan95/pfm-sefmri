@@ -4,7 +4,7 @@
 # Usage:
 #   mefmri_import_bids.sh <BIDS_ROOT> <SUBJECT> <OUT_SUBJECT_DIR> [options]
 # Example:
-#   mefmri_import_bids.sh /data/bids 06 /data/study/ME06 --task rest --func-dirname rest --func-prefix Rest --mode symlink --overwrite
+#   mefmri_import_bids.sh /data/bids 06 /data/study/ME06 --task rest --func-dirname rest --func-prefix Rest --mode symlink --overwrite --expect-task-volumes 900
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ "$#" -lt 3 ]]; then
-  echo "Usage: $0 <BIDS_ROOT> <SUBJECT> <OUT_SUBJECT_DIR> [--task rest] [--func-dirname rest] [--func-prefix Rest] [--mode symlink|copy] [--overwrite] [--echo-dim4-policy abort|truncate_to_min]" >&2
+  echo "Usage: $0 <BIDS_ROOT> <SUBJECT> <OUT_SUBJECT_DIR> [--task rest] [--func-dirname rest] [--func-prefix Rest] [--mode symlink|copy] [--overwrite] [--echo-dim4-policy abort|truncate_to_min] [--expect-task-volumes N]" >&2
   exit 2
 fi
 

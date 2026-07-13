@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Config for raw DICOM -> RevisedMe-fMRIPipeline intake import.
+# Config for raw DICOM -> MultiEchofMRI pipeline intake import.
 #
-# Usage:
-#   bash bin/mefmri_import_raw.sh <RawDicomDir> <SubjectDir> [ConfigFile] [--session N] [--dry-run]
-#
-# This file is a study-facing template. Update the protocol name, expected
-# counts, and regex rules to match your scanner export naming.
+# This is a study-facing template. Update the protocol name, expected counts,
+# and regex rules to match your scanner export naming.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MEDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -13,8 +10,8 @@ MEDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMPORT_PROTOCOL_NAME="cmrr_mb4_te4_rest_default"
 IMPORT_DCM2NIIX_BIN="${IMPORT_DCM2NIIX_BIN:-dcm2niix}"
 
-FUNC_DIRNAME="rest"              # task folder under func/unprocessed; rest/Rest is the standard default
-FUNC_FILE_PREFIX="Rest"          # output prefix for this task's runs; use e.g. [TaskPrefix] for FUNC_DIRNAME=[task_name]
+FUNC_DIRNAME="rest"
+FUNC_FILE_PREFIX="Rest"
 
 # Per-import expectations.
 IMPORT_EXPECT_TASK_RUNS_PER_SESSION=2

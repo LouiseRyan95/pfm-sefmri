@@ -98,7 +98,7 @@ echo "[medic] Subject=$Subject FuncDirName=$FuncDirName FuncFilePrefix=$FuncFile
 echo "[medic] warpkit env=$WARPKIT_ENV mode=$WARPKIT_ACTIVATE_MODE wk-medic=$MEDIC_BIN"
 echo "[medic] manifest root: $MedicRoot"
 
-mapfile -t SessionDirs < <(find "$UnprocRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
+mapfile -t SessionDirs < <(find -L "$UnprocRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
 [[ "${#SessionDirs[@]}" -gt 0 ]] || die "No session_* directories under $UnprocRoot"
 
 for SessionDir in "${SessionDirs[@]}"; do
@@ -106,12 +106,12 @@ for SessionDir in "${SessionDirs[@]}"; do
   [[ "$s" =~ ^[0-9]+$ ]] || continue
   (( s >= StartSession )) || continue
 
-  mapfile -t RunDirs < <(find "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
+  mapfile -t RunDirs < <(find -L "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
   for RunDir in "${RunDirs[@]}"; do
     r="${RunDir##*/run_}"
     [[ "$r" =~ ^[0-9]+$ ]] || continue
 
-    mapfile -t Mags < <(find "$RunDir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S${s}_R${r}_E*.nii.gz" ! -name '*_phase.nii.gz' | sort -V)
+    mapfile -t Mags < <(find -L "$RunDir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S${s}_R${r}_E*.nii.gz" ! -name '*_phase.nii.gz' | sort -V)
     Phases=()
     Jsons=()
     for mag in "${Mags[@]}"; do

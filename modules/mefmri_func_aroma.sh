@@ -192,7 +192,7 @@ map_qc_volume_to_cifti() {
 }
 
 list_runs() {
-  find "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V
+  find -L "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V
 }
 
 process_run() {

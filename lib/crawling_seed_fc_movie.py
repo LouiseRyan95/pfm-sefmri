@@ -48,6 +48,118 @@ def require_file(path: Path, label: str) -> None:
         raise SystemExit(f"Missing {label}: {path}")
 
 
+def pathlike_dconn_tokens(text: str) -> list[str]:
+    separators = set("<>\"' \t\r\n")
+    tokens: list[str] = []
+    for line in text.splitlines():
+        if ".dconn.nii" not in line:
+            continue
+
+        i = 0
+        while i < len(line):
+            if line[i] in separators:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(line) and line[j] not in separators:
+                j += 1
+            token = line[i:j]
+            if token.endswith(".dconn.nii") and "/" in token:
+                tokens.append(token)
+            i = j
+    return tokens
+
+
+def rewrite_dconn_references(text: str, dconn_abs: str, dconn_name: str) -> str:
+    separators = set("<>\"' \t\r\n")
+    rewritten_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if ".dconn.nii" not in line:
+            rewritten_lines.append(line)
+            continue
+
+        parts: list[str] = []
+        i = 0
+        while i < len(line):
+            if line[i] in separators:
+                parts.append(line[i])
+                i += 1
+                continue
+            j = i + 1
+            while j < len(line) and line[j] not in separators:
+                j += 1
+            token = line[i:j]
+            if token.endswith(".dconn.nii") and "/" in token:
+                parts.append(dconn_abs)
+            else:
+                parts.append(token)
+            i = j
+
+        line = "".join(parts)
+        line = re.sub(r"sub-[A-Za-z0-9_-]+\.dconn\.nii", dconn_name, line)
+        rewritten_lines.append(line)
+    return "".join(rewritten_lines)
+
+
+def rewrite_surface_references(
+    text: str,
+    surface_root: str,
+    surface_prefix: str,
+    flat_root: str,
+    flat_prefix: str,
+) -> str:
+    separators = set("<>\"' \t\r\n")
+    surface_kinds = {"inflated", "midthickness", "pial", "very_inflated", "white"}
+    flat_kinds = {"flat", "sphere"}
+
+    def replacement_for(token: str) -> str | None:
+        match = re.search(
+            r"(?:^|/)[^/<>\"'\s]+\.([LR])\."
+            r"(flat|sphere|inflated|midthickness|pial|very_inflated|white)"
+            r"(?:_MSMAll)?\.32k_fs_LR\.surf\.gii$",
+            token,
+        )
+        if not match:
+            return None
+        hemi, surf = match.groups()
+        if surf in flat_kinds:
+            return f"{flat_root}/{flat_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii"
+        if surf in surface_kinds:
+            return f"{surface_root}/{surface_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii"
+        return None
+
+    rewritten_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if ".surf.gii" not in line:
+            rewritten_lines.append(line)
+            continue
+
+        parts: list[str] = []
+        i = 0
+        while i < len(line):
+            if line[i] in separators:
+                parts.append(line[i])
+                i += 1
+                continue
+            j = i + 1
+            while j < len(line) and line[j] not in separators:
+                j += 1
+            token = line[i:j]
+            parts.append(replacement_for(token) or token)
+            i = j
+        rewritten_lines.append("".join(parts))
+    return "".join(rewritten_lines)
+
+
+def scene_points_to_dconn(scene_path: Path, dconn_path: Path) -> bool:
+    if not scene_path.exists():
+        return False
+    text = scene_path.read_text(encoding="utf-8", errors="surrogateescape")
+    dconn_abs = str(dconn_path.resolve())
+    path_tokens = pathlike_dconn_tokens(text)
+    return bool(path_tokens) and all(token == dconn_abs for token in path_tokens)
+
+
 def ensure_dtseries_link(src: Path, dst: Path, *, copy_dtseries: bool, force: bool) -> None:
     if dst.exists() or dst.is_symlink():
         if force:
@@ -81,46 +193,18 @@ def clone_scene(
         surface_prefix = surface_subject_prefix or infer_surface_subject_prefix(surface_resource_dir)
         flat_root = str((flat_surface_resource_dir or surface_resource_dir).resolve())
         flat_prefix = flat_surface_subject_prefix or surface_prefix
-        for hemi in ("L", "R"):
-            for surf in ("flat", "sphere"):
-                text = text.replace(
-                    f"../../../../../../../home/charleslynch/res0urces/HCP_S1200_GroupAvg_v1/S1200.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                    f"{flat_root}/{flat_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
-                text = text.replace(
-                    f"/home/charleslynch/home/charleslynch/res0urces/HCP_S1200_GroupAvg_v1/S1200.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                    f"{flat_root}/{flat_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
-                text = text.replace(
-                    f"S1200.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                    f"{flat_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
-            for surf in ("inflated", "midthickness", "pial", "very_inflated", "white"):
-                text = text.replace(
-                    f"../../../../../../../home/charleslynch/res0urces/HCP_S1200_GroupAvg_v1/S1200.{hemi}.{surf}_MSMAll.32k_fs_LR.surf.gii",
-                    f"{surface_root}/{surface_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
-                text = text.replace(
-                    f"/home/charleslynch/home/charleslynch/res0urces/HCP_S1200_GroupAvg_v1/S1200.{hemi}.{surf}_MSMAll.32k_fs_LR.surf.gii",
-                    f"{surface_root}/{surface_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
-                text = text.replace(
-                    f"S1200.{hemi}.{surf}_MSMAll.32k_fs_LR.surf.gii",
-                    f"{surface_prefix}.{hemi}.{surf}.32k_fs_LR.surf.gii",
-                )
+        text = rewrite_surface_references(text, surface_root, surface_prefix, flat_root, flat_prefix)
     dconn_name = f"{subject}.dconn.nii"
     dconn_abs = str(dconn_path.resolve())
-    text = re.sub(
-        r"\.\./\.\./\.\./BlindedRatings/sub-[^/<]+/sub-[^/<]+\.dconn\.nii",
-        dconn_abs,
-        text,
-    )
-    text = re.sub(r"sub-[A-Za-z0-9]+\.dconn\.nii", dconn_name, text)
+    text = rewrite_dconn_references(text, dconn_abs, dconn_name)
     text = re.sub(
         r"\.\./\.\./\.\./BlindedRatings/Movies/FlatMaps\+Inflated\.scene",
         str(scene_out.resolve()),
         text,
     )
+    text = text.replace("__CRAWLING_SEED_TEMPLATE__/Movies/FlatMaps+Inflated.scene", str(scene_out.resolve()))
+    text = text.replace("__CRAWLING_SEED_TEMPLATE__/Movies/", "")
+    text = text.replace("__CRAWLING_SEED_TEMPLATE__/", "")
     scene_out.write_text(text, encoding="utf-8", errors="surrogateescape")
 
 
@@ -288,7 +372,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True, type=Path, help="Output root.")
     parser.add_argument("--scene-template", default=DEFAULT_SCENE, type=Path)
     parser.add_argument("--vertices", default=DEFAULT_VERTICES, type=Path)
-    parser.add_argument("--template-subject", default="sub-ME01")
+    parser.add_argument("--template-subject", default="sub-TEMPLATE")
     parser.add_argument(
         "--surface-resource-dir",
         default=None,
@@ -372,7 +456,7 @@ def main(argv: list[str]) -> int:
     ensure_dtseries_link(dtseries, subject_dtseries, copy_dtseries=args.copy_dtseries, force=args.force)
     shutil.copy2(vertices_src, vertices_out)
 
-    if args.force or not scene_out.exists():
+    if args.force or not scene_points_to_dconn(scene_out, dconn):
         clone_scene(
             scene_template,
             scene_out,
@@ -384,6 +468,13 @@ def main(argv: list[str]) -> int:
             args.flat_surface_subject_prefix,
             dconn,
         )
+
+    if not args.skip_movie and movie_out.exists() and not args.force:
+        print(f"[SKIP] Existing movie: {movie_out}")
+        print("[INFO] Use --force to regenerate it.")
+        print(f"[DONE] scene: {scene_out}")
+        print(f"[DONE] movie: {movie_out}")
+        return 0
 
     try:
         if args.force_dconn and dconn.exists():
@@ -397,54 +488,50 @@ def main(argv: list[str]) -> int:
             print(f"[SKIP] Existing dconn: {dconn}")
 
         if not args.skip_movie:
-            if args.target_size_mb is not None and movie_out.exists() and not args.force:
-                print(f"[SKIP] Existing movie: {movie_out}")
-                print("[INFO] Use --force to regenerate and compress it to --target-size-mb.")
+            if args.force and source_movie_out.exists():
+                source_movie_out.unlink()
+            if args.force and movie_out.exists():
+                movie_out.unlink()
+            if not render_movie_out.exists():
+                vertices = read_vertices(vertices_out)
+                cmd = [
+                    *wb_surfer_command(args),
+                    "-s",
+                    str(scene_out),
+                    "-n",
+                    args.subject,
+                    "-o",
+                    str(render_movie_out),
+                    "--width",
+                    str(args.width),
+                    "--height",
+                    str(args.height),
+                    "-r",
+                    str(args.framerate),
+                ]
+                if args.num_cpus is not None:
+                    cmd.extend(["--num-cpus", str(args.num_cpus)])
+                if args.reverse:
+                    cmd.append("--reverse")
+                if args.closed:
+                    cmd.append("--closed")
+                cmd.extend(["--vertex-mode", args.vertex_mode])
+                cmd.extend(vertices)
+                run(cmd, cwd=movie_dir)
             else:
-                if args.force and source_movie_out.exists():
-                    source_movie_out.unlink()
-                if args.force and movie_out.exists():
-                    movie_out.unlink()
-                if not render_movie_out.exists():
-                    vertices = read_vertices(vertices_out)
-                    cmd = [
-                        *wb_surfer_command(args),
-                        "-s",
-                        str(scene_out),
-                        "-n",
-                        args.subject,
-                        "-o",
-                        str(render_movie_out),
-                        "--width",
-                        str(args.width),
-                        "--height",
-                        str(args.height),
-                        "-r",
-                        str(args.framerate),
-                    ]
-                    if args.num_cpus is not None:
-                        cmd.extend(["--num-cpus", str(args.num_cpus)])
-                    if args.reverse:
-                        cmd.append("--reverse")
-                    if args.closed:
-                        cmd.append("--closed")
-                    cmd.extend(["--vertex-mode", args.vertex_mode])
-                    cmd.extend(vertices)
-                    run(cmd, cwd=movie_dir)
-                else:
-                    print(f"[SKIP] Existing source movie: {render_movie_out}")
+                print(f"[SKIP] Existing source movie: {render_movie_out}")
 
-                if args.target_size_mb is not None:
-                    compress_movie_to_target_size(
-                        source_movie=render_movie_out,
-                        output_movie=movie_out,
-                        target_size_mb=args.target_size_mb,
-                        ffmpeg_bin=args.ffmpeg_bin,
-                        ffprobe_bin=args.ffprobe_bin,
-                        overwrite=args.force,
-                    )
-                    if not args.keep_source_movie and render_movie_out != movie_out and render_movie_out.exists():
-                        render_movie_out.unlink()
+            if args.target_size_mb is not None:
+                compress_movie_to_target_size(
+                    source_movie=render_movie_out,
+                    output_movie=movie_out,
+                    target_size_mb=args.target_size_mb,
+                    ffmpeg_bin=args.ffmpeg_bin,
+                    ffprobe_bin=args.ffprobe_bin,
+                    overwrite=args.force,
+                )
+                if not args.keep_source_movie and render_movie_out != movie_out and render_movie_out.exists():
+                    render_movie_out.unlink()
     finally:
         if args.keep_dconn and dconn.exists():
             print(f"[DONE] dconn: {dconn}")

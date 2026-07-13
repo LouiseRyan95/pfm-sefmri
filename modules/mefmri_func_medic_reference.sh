@@ -281,7 +281,7 @@ build_medic_distorted_sbref() {
     echo -e "echo\tte_ms\tincluded\tsource_type\tsource_path\tworking_copy"
   } > "$sources_tsv"
 
-  mapfile -t mags < <(find "$unproc_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S${s}_R${r}_E*.nii.gz" ! -name '*_phase.nii.gz' | sort -V)
+  mapfile -t mags < <(find -L "$unproc_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S${s}_R${r}_E*.nii.gz" ! -name '*_phase.nii.gz' | sort -V)
   local selected_refs=()
   local selected_tes_seconds=()
   local mag base echo_idx te include sbref one src_type reoriented
@@ -344,13 +344,13 @@ APPLY_WARP_BIN="$(resolve_warpkit_bin "$WARPKIT_APPLY_WARP_BIN")"
 
 echo "[medic-reference] Subject=$Subject FuncDirName=$FuncDirName policy=$MEDIC_REFERENCE_POLICY sbref_combination=$SBREF_ECHO_COMBINATION sbref_max_te_ms=$SBREF_MAX_TE_MS"
 
-mapfile -t SessionDirs < <(find "$UnprocRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
+mapfile -t SessionDirs < <(find -L "$UnprocRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
 for SessionDir in "${SessionDirs[@]}"; do
   s="${SessionDir##*/session_}"
   [[ "$s" =~ ^[0-9]+$ ]] || continue
   (( s >= StartSession )) || continue
 
-  mapfile -t RunDirs < <(find "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
+  mapfile -t RunDirs < <(find -L "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
   for RunDir in "${RunDirs[@]}"; do
     r="${RunDir##*/run_}"
     [[ "$r" =~ ^[0-9]+$ ]] || continue

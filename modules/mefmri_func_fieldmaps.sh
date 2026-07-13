@@ -134,7 +134,7 @@ if [[ "$FIELDMAP_STRATEGY" == "direct_b0" ]]; then
   mapfile -t DIRECT_PHASE_FILES < <(
     IFS=',' read -r -a pats <<< "$FM_DIRECT_B0_PHASE_PATTERN"
     for pat in "${pats[@]}"; do
-      find "$RAW_FM_DIR" -maxdepth 1 -type f -name "$pat" -print 2>/dev/null
+      find -L "$RAW_FM_DIR" -maxdepth 1 -type f -name "$pat" -print 2>/dev/null
     done | sort -V
   )
   [[ "${#DIRECT_PHASE_FILES[@]}" -gt 0 ]] || die "No direct B0 phase/phasediff files found in $RAW_FM_DIR"
@@ -165,7 +165,7 @@ if [[ "$FIELDMAP_STRATEGY" == "direct_b0" ]]; then
     for pat in "${pats[@]}"; do
       while IFS= read -r candidate; do
         [[ "$(basename "$candidate")" == *"$tag"* ]] && { printf '%s\n' "$candidate"; return 0; }
-      done < <(find "$RAW_FM_DIR" -maxdepth 1 -type f -name "$pat" -print 2>/dev/null | sort -V)
+      done < <(find -L "$RAW_FM_DIR" -maxdepth 1 -type f -name "$pat" -print 2>/dev/null | sort -V)
     done
     return 1
   }

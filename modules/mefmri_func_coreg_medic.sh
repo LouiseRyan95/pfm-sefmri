@@ -67,7 +67,7 @@ preserve_run_local_medic_dirs() {
     dest_dir="$MedicPreserveDir/$rel_dir"
     mkdir -p "$dest_dir"
     mv "$medic_dir" "$dest_dir/MEDIC"
-  done < <(find "$FuncRoot" -mindepth 3 -maxdepth 3 -type d -name MEDIC | sort -V)
+  done < <(find -L "$FuncRoot" -mindepth 3 -maxdepth 3 -type d -name MEDIC | sort -V)
 }
 
 restore_run_local_medic_dirs() {
@@ -81,7 +81,7 @@ restore_run_local_medic_dirs() {
     mkdir -p "$dest_dir"
     rm -rf "$dest_dir/MEDIC"
     mv "$preserved" "$dest_dir/MEDIC"
-  done < <(find "$MedicPreserveDir" -mindepth 3 -maxdepth 3 -type d -name MEDIC | sort -V)
+  done < <(find -L "$MedicPreserveDir" -mindepth 3 -maxdepth 3 -type d -name MEDIC | sort -V)
 
   rm -rf "$MedicPreserveDir"
   MedicPreserveDir=""
@@ -204,12 +204,12 @@ mkdir -p "$XfmsDir" "$COREG_QA_DIR" "$FuncRoot/AverageSBref"
 WDIR="$FuncRoot/AverageSBref"
 rm -f "$WDIR"/MEDICSBref_*.nii.gz "$WDIR"/TMP_MEDIC*.nii.gz
 
-mapfile -t SessionDirs < <(find "$FuncRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
+mapfile -t SessionDirs < <(find -L "$FuncRoot" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
 for SessionDir in "${SessionDirs[@]}"; do
   s="${SessionDir##*/session_}"
   [[ "$s" =~ ^[0-9]+$ ]] || continue
   (( s >= StartSession )) || continue
-  mapfile -t RunDirs < <(find "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
+  mapfile -t RunDirs < <(find -L "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
   for RunDir in "${RunDirs[@]}"; do
     r="${RunDir##*/run_}"
     [[ "$r" =~ ^[0-9]+$ ]] || continue
@@ -268,7 +268,7 @@ for SessionDir in "${SessionDirs[@]}"; do
   s="${SessionDir##*/session_}"
   [[ "$s" =~ ^[0-9]+$ ]] || continue
   (( s >= StartSession )) || continue
-  mapfile -t RunDirs < <(find "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
+  mapfile -t RunDirs < <(find -L "$SessionDir" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
   for RunDir in "${RunDirs[@]}"; do
     r="${RunDir##*/run_}"
     [[ "$r" =~ ^[0-9]+$ ]] || continue

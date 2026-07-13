@@ -85,7 +85,7 @@ mapfile -t CIFTI_TAGS < <(echo "$InputSpec" | tr ',' '\n' | sed 's/^ *//; s/ *$/
 [[ "${#CIFTI_TAGS[@]}" -gt 0 ]] || die "no valid tags parsed from InputSpec: '$InputSpec'"
 
 mapfile -t SESSION_DIRS < <(
-  find "$Subdir/func/$FuncDirName" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V
+  find -L "$Subdir/func/$FuncDirName" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V
 )
 
 for SES_DIR in "${SESSION_DIRS[@]}"; do
@@ -95,7 +95,7 @@ for SES_DIR in "${SESSION_DIRS[@]}"; do
   (( s >= StartSession )) || continue
 
   mapfile -t RUN_DIRS < <(
-    find "$SES_DIR" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V
+    find -L "$SES_DIR" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V
   )
 
   for OUT_DIR in "${RUN_DIRS[@]}"; do

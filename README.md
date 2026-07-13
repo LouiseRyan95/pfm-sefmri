@@ -61,6 +61,32 @@ Example:
 bash bin/mefmri_pipeline.sh /path/to/study/ME06
 ```
 
+## Importing Inputs
+
+Use the unified importer for either raw scanner exports/DICOMs or BIDS NIfTI
+datasets:
+
+```bash
+bash bin/mefmri_import.sh <InputDir> <...args...>
+```
+
+The importer auto-detects raw DICOM inputs from DICOM-like files (`*.dcm` or
+`DICOMDIR`) and BIDS inputs from `sub-*` NIfTIs. You can override detection with
+`--input-type raw` or `--input-type bids`.
+
+Examples:
+
+```bash
+# Raw scanner export, optionally running/staging NORDIC.
+bash bin/mefmri_import.sh /path/to/raw_dicom_export /path/to/study/ME001 config/mefmri_import_raw_config.sh --session 1 --nordic
+
+# BIDS root.
+bash bin/mefmri_import.sh /path/to/bids 06 /path/to/study/ME06 --task rest --mode symlink --overwrite
+```
+
+The backend-specific scripts remain available for advanced/debug use:
+`bin/mefmri_import_raw.sh` and `bin/mefmri_import_bids.sh`.
+
 ## Expected Input Layout
 
 The default task is resting state:
@@ -252,15 +278,16 @@ or `RidgeFusion_VTX+ArealParcellation.dlabel.nii`.
 
 ## Crawling Seed FC Movie QC
 
-The crawling seed FC movie module is independent of NSI. Enable it with:
+The crawling seed FC movie is an optional concat-stage QC sub-step and is
+independent of NSI. Enable it with:
 
 ```bash
 CRAWLING_SEED_FC_ENABLE=1
 ```
 
-It runs after concat and before NSI by default, or can be rerun directly with
-`START_FROM_MODULE=fc_movie`. The module derives the final concatenated CIFTI by
-default and writes to:
+It runs after concat and before NSI when enabled. To rerun concat and the
+optional movie, use `START_FROM_MODULE=concat` and `STOP_AFTER_MODULE=concat`.
+The movie derives the final concatenated CIFTI by default and writes to:
 
 ```text
 func/<FUNC_DIRNAME>/qa/CrawlingSeedFC/

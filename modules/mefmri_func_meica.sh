@@ -69,13 +69,13 @@ MEICA_NSI_RESCUE_THRESHOLD="${MEICA_NSI_RESCUE_THRESHOLD:-0.20}"
 MEICA_NSI_RESCUE_QUANTILE="${MEICA_NSI_RESCUE_QUANTILE:-0.10}"
 MEICA_NSI_KILL_MODE="${MEICA_NSI_KILL_MODE:-adaptive}"        # adaptive|fixed
 MEICA_NSI_KILL_THRESHOLD="${MEICA_NSI_KILL_THRESHOLD:-0.05}"
-MEICA_NSI_KILL_MIN="${MEICA_NSI_KILL_MIN:-0.02}"
+MEICA_NSI_KILL_MIN="${MEICA_NSI_KILL_MIN:-0.04}"
 MEICA_NSI_KILL_MAX="${MEICA_NSI_KILL_MAX:-0.10}"
-MEICA_NSI_KILL_INTERCEPT="${MEICA_NSI_KILL_INTERCEPT:-0.10}"
-MEICA_NSI_KILL_SLOPE="${MEICA_NSI_KILL_SLOPE:-0.50}"
+MEICA_NSI_KILL_INTERCEPT="${MEICA_NSI_KILL_INTERCEPT:-0.14}"
+MEICA_NSI_KILL_SLOPE="${MEICA_NSI_KILL_SLOPE:-0.25}"
 MEICA_NSI_GUARDRAIL_KAPPA_RHO="${MEICA_NSI_GUARDRAIL_KAPPA_RHO:-1}" # 0|1
 MEICA_SUBCORT_RATIO_THRESH="${MEICA_SUBCORT_RATIO_THRESH:-5.0}"
-MEICA_KILL_PRIORITY_ENABLE="${MEICA_KILL_PRIORITY_ENABLE:-1}"       # 0|1
+MEICA_KILL_PRIORITY_ENABLE="${MEICA_KILL_PRIORITY_ENABLE:-0}"       # 0|1
 MEICA_KILL_PRIORITY_W_LOGRATIO="${MEICA_KILL_PRIORITY_W_LOGRATIO:-0.50}"
 MEICA_KILL_PRIORITY_W_NSI="${MEICA_KILL_PRIORITY_W_NSI:-0.30}"
 MEICA_KILL_PRIORITY_W_VAR="${MEICA_KILL_PRIORITY_W_VAR:-0.20}"
@@ -290,11 +290,11 @@ sanity_check_tedana() {
 list_runs() {
   local subdir="$1"
   local start="$2"
-  mapfile -t SESS < <(find "$subdir/func/$FuncDirName" -maxdepth 1 -type d -name 'session_*' | sort)
+  mapfile -t SESS < <(find -L "$subdir/func/$FuncDirName" -maxdepth 1 -type d -name 'session_*' | sort)
   for sesdir in "${SESS[@]}"; do
     local s="${sesdir##*/}"; s="${s#session_}"
     [[ "$s" -ge "$start" ]] || continue
-    find "$sesdir" -maxdepth 1 -type d -name 'run_*' | sort
+    find -L "$sesdir" -maxdepth 1 -type d -name 'run_*' | sort
   done
 }
 

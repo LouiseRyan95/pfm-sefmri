@@ -50,8 +50,8 @@ fi
 : "${MEDIR:=$(cd "$SCRIPT_DIR/.." && pwd)}"
 : "${EnvironmentScript:=$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh}"
 : "${START_SESSION:=1}"
-: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
-: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
+: "${START_FROM_MODULE:=validate}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm|pfm_update
+: "${STOP_AFTER_MODULE:=}" # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm|pfm_update
 : "${PIPELINE_SKIP_ANAT:=0}" # 0|1 (used by FUNC_DIRNAME=All parent loop to avoid rerunning anatomy per task)
 
 # Optional post-config overrides (used internally by the All-tasks driver).
@@ -151,7 +151,6 @@ stage_index() {
     mgtr) echo 70 ;;
     vol2surf) echo 80 ;;
     concat) echo 90 ;;
-    fc_movie|crawling_seed_fc) echo 95 ;;
     nsi) echo 100 ;;
     pfm) echo 110 ;;
     pfm_update|infomap_update) echo 115 ;;
@@ -187,7 +186,7 @@ discover_task_dirs() {
       compgen -G "$task_dir/session_*" > /dev/null || continue
       seen["$task"]=1
       printf '%s\n' "$task"
-    done < <(find "$root" -mindepth 1 -maxdepth 1 -type d | sort -V)
+    done < <(find -L "$root" -mindepth 1 -maxdepth 1 -type d | sort -V)
   done
 }
 
@@ -445,7 +444,7 @@ detect_dataset_min_echoes() {
       if [[ -z "$min_count" || "$count" -lt "$min_count" ]]; then
         min_count="$count"
       fi
-    done < <(find "$root" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V)
+    done < <(find -L "$root" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V)
   done
   if [[ -z "$min_count" ]]; then
     echo "0"
@@ -600,10 +599,11 @@ run_module() {
     {
       print >> logfile_path
       fflush(logfile_path)
-      if ($0 ~ /^\[(concat|nsi|pfm)\] complete$/) {
+      if ($0 ~ /^\[(concat|crawling_seed_fc|nsi|pfm)\] complete$/) {
         next
       }
       if ($0 ~ /^\[coreg\]/ || $0 ~ /^\[headmotion\]/ || $0 ~ /^\[medic\]/ || $0 ~ /^\[concat\]/ || $0 ~ /^\[nsi\]/ || $0 ~ /^\[pfm\]/ ||
+          $0 ~ /^\[crawling_seed_fc\]/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: start subject=/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: start session_/ ||
           $0 ~ /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] MEICA: done session_/ ||
@@ -900,26 +900,20 @@ if [[ "${CONCAT_ENABLE}" == "1" ]]; then
     print_section "Running concat module"
     [ -f "$FUNC_CONCAT_MODULE" ] || { echo "ERROR: missing module: $FUNC_CONCAT_MODULE"; exit 2; }
     run_module "concat" bash "$FUNC_CONCAT_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+    if [[ "${CRAWLING_SEED_FC_ENABLE}" == "1" ]]; then
+      print_section "Generating crawling seed FC movie"
+      [ -f "$FUNC_CRAWLING_SEED_FC_MODULE" ] || { echo "ERROR: missing module: $FUNC_CRAWLING_SEED_FC_MODULE"; exit 2; }
+      MODULE_DISPLAY_TAG="concat:crawling_seed_fc" MODULE_LOG_TAG="concat_crawling_seed_fc" \
+        run_module "crawling_seed_fc" bash "$FUNC_CRAWLING_SEED_FC_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
+    else
+      echo "Skipping crawling seed FC movie (CRAWLING_SEED_FC_ENABLE=${CRAWLING_SEED_FC_ENABLE})"
+    fi
     if [[ "$STOP_AFTER_MODULE" == "concat" ]]; then
       echo "Stopping after concat (STOP_AFTER_MODULE=concat)"
       exit 0
     fi
   else
     echo "Skipping concat (START_FROM_MODULE=${START_FROM_MODULE})"
-  fi
-fi
-
-if [[ "${CRAWLING_SEED_FC_ENABLE}" == "1" ]]; then
-  if should_run_stage "fc_movie"; then
-    print_section "Generating crawling seed FC movie"
-    [ -f "$FUNC_CRAWLING_SEED_FC_MODULE" ] || { echo "ERROR: missing module: $FUNC_CRAWLING_SEED_FC_MODULE"; exit 2; }
-    run_module "fc_movie" bash "$FUNC_CRAWLING_SEED_FC_MODULE" "$Subject" "$StudyFolder" "$MEDIR" "$START_SESSION" "$FUNC_DIRNAME" "$FUNC_FILE_PREFIX"
-    if [[ "$STOP_AFTER_MODULE" == "fc_movie" || "$STOP_AFTER_MODULE" == "crawling_seed_fc" ]]; then
-      echo "Stopping after fc_movie (STOP_AFTER_MODULE=${STOP_AFTER_MODULE})"
-      exit 0
-    fi
-  else
-    echo "Skipping crawling seed FC movie (START_FROM_MODULE=${START_FROM_MODULE})"
   fi
 fi
 

@@ -127,7 +127,7 @@ APPLY_WARP_BIN="$(resolve_warpkit_bin "$WARPKIT_APPLY_WARP_BIN")"
 echo "[medic-headmotion] Subject=$Subject FuncDirName=$FuncDirName AtlasSpace=$AtlasSpace"
 echo "[medic-headmotion] warpkit apply=$APPLY_WARP_BIN"
 
-mapfile -t AllScans < <(find "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -path '*/session_*/run_*' | sort -V | awk -v start="$StartSession" '
+mapfile -t AllScans < <(find -L "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -path '*/session_*/run_*' | sort -V | awk -v start="$StartSession" '
   {
     split($0, parts, "/session_");
     split(parts[2], sr, "/run_");

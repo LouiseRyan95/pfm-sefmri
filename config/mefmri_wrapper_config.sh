@@ -43,7 +43,7 @@ PIPELINE_PYTHON="python3"
 # =============================================================================
 # Resume / routing. Leave START_FROM_MODULE at validate for a fresh run.
 START_SESSION=1
-START_FROM_MODULE="validate"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
+START_FROM_MODULE="validate"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm|pfm_update
 STOP_AFTER_MODULE=""           # "" to run full chain
 
 # Functional naming and reference space
@@ -66,9 +66,8 @@ SINGLE_ECHO_DENOISE_METHOD="acompcor" # aroma|acompcor
 SINGLE_ECHO_ECHO_INDEX=1        # fallback/source echo used for single-echo denoising
 AROMA_NSI_THRESHOLD=0.05        # fixed NSI kill threshold for ICA-AROMA component screening
 CONCAT_ENABLE=1
-NSI_ENABLE=1
-PFM_ENABLE=1
-CRAWLING_SEED_FC_ENABLE=0
+NSI_ENABLE=1                     # optional downstream metric; set 0 to skip when only preprocessing/QC is needed
+PFM_ENABLE=1                     # optional downstream mapping; set 0 to skip time-consuming PFM outputs
 
 # Threading defaults used by modules that support parallelism.
 THREADS_DEFAULT=8
@@ -189,6 +188,35 @@ CONCAT_OUT_SUBDIR="ConcatenatedCiftis"
 CONCAT_CENSOR_BY_FD=1
 CONCAT_FD_THRESHOLD=0.3
 
+# Optional concat-stage QC movie. This runs immediately after concat when
+# CRAWLING_SEED_FC_ENABLE=1; it is not a START/STOP routing module.
+# It is resource-heavy: it creates a dense correlation CIFTI that can be tens of
+# GB, then renders frames with Workbench/wb_surfer2. Expect tens of minutes to
+# 1+ hour per subject; set CRAWLING_SEED_FC_ENABLE=0 to skip it.
+CRAWLING_SEED_FC_ENABLE=0
+CRAWLING_SEED_FC_INPUT_CIFTI=""          # empty => final concatenated CIFTI
+CRAWLING_SEED_FC_INPUT_TAG=""            # empty => CONCAT_INPUT_TAG
+CRAWLING_SEED_FC_OUTDIR=""               # empty => func/<FUNC_DIRNAME>/qa/CrawlingSeedFC
+CRAWLING_SEED_FC_WB_SURFER2=""           # direct path to wb_surfer2; overrides conda env
+CRAWLING_SEED_FC_WB_SURFER2_CONDA_ENV="wbsurfer_env"
+CRAWLING_SEED_FC_SCENE_TEMPLATE="$MEDIR/res0urces/CrawlingSeedFC/FlatMaps+Inflated.scene"
+CRAWLING_SEED_FC_VERTICES="$MEDIR/res0urces/CrawlingSeedFC/VerticesToSample.txt"
+CRAWLING_SEED_FC_TEMPLATE_SUBJECT="sub-TEMPLATE"
+CRAWLING_SEED_FC_SURFACE_RESOURCE_DIR="" # empty => anat/T1w or anat/MNINonLinear fsaverage_LR32k from AtlasSpace
+CRAWLING_SEED_FC_SURFACE_SUBJECT_PREFIX="" # empty => infer from subject surface filenames
+CRAWLING_SEED_FC_FLAT_SURFACE_RESOURCE_DIR="" # empty => anat/MNINonLinear/fsaverage_LR32k for T1w flatmaps
+CRAWLING_SEED_FC_FLAT_SURFACE_SUBJECT_PREFIX="" # empty => subject ID
+CRAWLING_SEED_FC_WIDTH=1280
+CRAWLING_SEED_FC_HEIGHT=720
+CRAWLING_SEED_FC_FRAMERATE=10
+# Each render worker may load the dense dconn; keep this low unless RAM is ample.
+CRAWLING_SEED_FC_NUM_CPUS=1
+CRAWLING_SEED_FC_TARGET_SIZE_MB=10
+CRAWLING_SEED_FC_FORCE=0
+CRAWLING_SEED_FC_FORCE_DCONN=0
+CRAWLING_SEED_FC_SKIP_MOVIE=0
+CRAWLING_SEED_FC_KEEP_DCONN=0
+
 # -----------------------------------------------------------------------------
 # 3g) NSI
 # -----------------------------------------------------------------------------
@@ -230,31 +258,6 @@ PFM_HOMOGENEITY_N_ROTATIONS=100
 PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE=5
 PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY=1000
 PFM_HOMOGENEITY_ALPHA=0.05
-
-# -----------------------------------------------------------------------------
-# 3i) Crawling Seed FC Movie QC
-# -----------------------------------------------------------------------------
-CRAWLING_SEED_FC_INPUT_CIFTI=""          # empty => final concatenated CIFTI
-CRAWLING_SEED_FC_INPUT_TAG=""            # empty => CONCAT_INPUT_TAG
-CRAWLING_SEED_FC_OUTDIR=""               # empty => func/<FUNC_DIRNAME>/qa/CrawlingSeedFC
-CRAWLING_SEED_FC_WB_SURFER2=""           # direct path to wb_surfer2; overrides conda env
-CRAWLING_SEED_FC_WB_SURFER2_CONDA_ENV="wbsurfer_env"
-CRAWLING_SEED_FC_SCENE_TEMPLATE="$MEDIR/res0urces/CrawlingSeedFC/FlatMaps+Inflated.scene"
-CRAWLING_SEED_FC_VERTICES="$MEDIR/res0urces/CrawlingSeedFC/VerticesToSample.txt"
-CRAWLING_SEED_FC_TEMPLATE_SUBJECT="sub-ME01"
-CRAWLING_SEED_FC_SURFACE_RESOURCE_DIR="" # empty => anat/T1w or anat/MNINonLinear fsaverage_LR32k from AtlasSpace
-CRAWLING_SEED_FC_SURFACE_SUBJECT_PREFIX="" # empty => infer from subject surface filenames
-CRAWLING_SEED_FC_FLAT_SURFACE_RESOURCE_DIR="" # empty => anat/MNINonLinear/fsaverage_LR32k for T1w flatmaps
-CRAWLING_SEED_FC_FLAT_SURFACE_SUBJECT_PREFIX="" # empty => subject ID
-CRAWLING_SEED_FC_WIDTH=1280
-CRAWLING_SEED_FC_HEIGHT=720
-CRAWLING_SEED_FC_FRAMERATE=10
-CRAWLING_SEED_FC_NUM_CPUS="$THREADS_DEFAULT"
-CRAWLING_SEED_FC_TARGET_SIZE_MB=10
-CRAWLING_SEED_FC_FORCE=0
-CRAWLING_SEED_FC_FORCE_DCONN=0
-CRAWLING_SEED_FC_SKIP_MOVIE=0
-CRAWLING_SEED_FC_KEEP_DCONN=0
 
 # =============================================================================
 # 4) Advanced / Rarely Changed Knobs

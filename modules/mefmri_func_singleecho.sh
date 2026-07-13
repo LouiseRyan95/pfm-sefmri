@@ -52,7 +52,7 @@ ensure_source_input() {
 
 log "start subject=${Subject} mode=${EffectiveMode} source_tag=${SourceTag} output_tag=${DenoiseTag}"
 
-mapfile -t RUNS < <(find "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V)
+mapfile -t RUNS < <(find -L "$Subdir/func/$FuncDirName" -mindepth 2 -maxdepth 2 -type d -name 'run_*' | sort -V)
 [[ "${#RUNS[@]}" -gt 0 ]] || die "No run directories found in $Subdir/func/$FuncDirName"
 
 for run_dir in "${RUNS[@]}"; do
