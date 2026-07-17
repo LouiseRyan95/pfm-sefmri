@@ -8,6 +8,9 @@ Expected output layout:
     func/unprocessed/<func_dirname>/session_<S>/run_<R>/<prefix>_S<S>_R<R>_E<E>.nii.gz(+json)
     func/unprocessed/<func_dirname>/field_maps/AP_S<S>_R<R>.nii.gz(+json)
     func/unprocessed/<func_dirname>/field_maps/PA_S<S>_R<R>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/field_maps/PhaseDiff_S<S>_R<R>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/field_maps/Magnitude1_S<S>_R<R>.nii.gz(+json)
+    func/unprocessed/<func_dirname>/field_maps/Magnitude2_S<S>_R<R>.nii.gz(+json)
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 class ImportErrorAbort(RuntimeError):
@@ -64,8 +67,32 @@ def symlink_or_copy(src: Path, dst: Path, mode: str, overwrite: bool) -> None:
             dst.unlink()
 
     if mode == "symlink":
-        rel = os.path.relpath(src, start=dst.parent)
-        dst.symlink_to(rel)
+        try:
+            target = os.path.relpath(src, start=dst.parent)
+        except ValueError:
+            target = src
+        try:
+            dst.symlink_to(target)
+        except OSError as exc:
+            # Windows often denies symlink creation without developer/admin mode.
+            # If source and destination are on the same volume, a hardlink keeps
+            # the import lightweight without requiring symlink privileges.
+            same_drive = Path(src).drive.lower() == Path(dst).drive.lower()
+            if getattr(exc, "winerror", None) == 1314 and same_drive:
+                try:
+                    os.link(src, dst)
+                except OSError as link_exc:
+                    raise ImportErrorAbort(
+                        "Could not create a symlink or hardlink for "
+                        f"{src} -> {dst}. Enable Windows developer/admin symlink privileges, "
+                        "write to a hardlink-capable location, or rerun with --mode copy."
+                    ) from link_exc
+            else:
+                raise ImportErrorAbort(
+                    "Could not create a symlink for "
+                    f"{src} -> {dst}. Enable Windows developer/admin symlink privileges "
+                    "or rerun with --mode copy."
+                ) from exc
     else:
         shutil.copy2(src, dst)
 
@@ -80,7 +107,7 @@ def iter_bids_nii(subdir: Path) -> Iterable[Path]:
 
 
 def is_datatype_path(path: Path, dtype: str) -> bool:
-    return f"/{dtype}/" in str(path)
+    return dtype in path.parts
 
 
 def sort_mixed_labels(vals: Iterable[str]) -> List[str]:
@@ -149,6 +176,7 @@ def map_sessions_and_runs(
 ) -> Tuple[Dict[str, int], Dict[Tuple[str, str], int], Dict[Tuple[str, str], List[Tuple[int, Path, Dict[str, str]]]]]:
     grouped: Dict[Tuple[str, str], List[Tuple[int, Path, Dict[str, str]]]] = defaultdict(list)
     session_labels = []
+    missing_echo_count = 0
 
     for f in bold_files:
         entities, suffix = parse_entities(f)
@@ -160,17 +188,20 @@ def map_sessions_and_runs(
         session_labels.append(ses_label)
         echo_s = entities.get("echo")
         if echo_s is None:
-            warnings.append(f"Missing echo-<N> entity for bold file (skipping): {f}")
-            continue
-        if not echo_s.isdigit():
+            echo = 1
+            missing_echo_count += 1
+        elif not echo_s.isdigit():
             warnings.append(f"Non-numeric echo entity for bold file (skipping): {f}")
             continue
-        echo = int(echo_s)
+        else:
+            echo = int(echo_s)
         rkey = run_group_key(f, entities, suffix)
         grouped[(ses_label, rkey)].append((echo, f, entities))
 
     if not grouped:
-        raise ImportErrorAbort(f"No task-{task} multi-echo BOLD inputs found.")
+        raise ImportErrorAbort(f"No task-{task} BOLD inputs found.")
+    if missing_echo_count:
+        warnings.append(f"{missing_echo_count} task-{task} BOLD file(s) had no echo-<N> entity; imported as single-echo E1.")
 
     ses_map = {ses: i for i, ses in enumerate(sort_mixed_labels(session_labels), start=1)}
     run_map: Dict[Tuple[str, str], int] = {}
@@ -191,8 +222,24 @@ def map_sessions_and_runs(
     return ses_map, run_map, grouped
 
 
+def bids_intended_keys(path: Path, bids_subject_dir: Path) -> Set[str]:
+    keys = {path.name, path.as_posix(), str(path).replace("\\", "/")}
+    try:
+        rel = path.relative_to(bids_subject_dir)
+        keys.add(rel.as_posix())
+    except ValueError:
+        pass
+    try:
+        ses_idx = next(i for i, part in enumerate(path.parts) if part.startswith("ses-"))
+        keys.add("/".join(path.parts[ses_idx:]).replace("\\", "/"))
+    except StopIteration:
+        pass
+    return keys
+
+
 def import_func(
     func_files: List[Path],
+    bids_subject_dir: Path,
     out_subject_dir: Path,
     task: str,
     func_dirname: str,
@@ -201,10 +248,11 @@ def import_func(
     overwrite: bool,
     echo_dim4_policy: str,
     warnings: List[str],
-) -> Tuple[int, int]:
+) -> Tuple[int, int, Dict[str, int], Dict[Tuple[str, str], int], Dict[str, Tuple[int, int]]]:
     ses_map, run_map, grouped = map_sessions_and_runs(func_files, task, warnings)
     copied_nii = 0
     copied_json = 0
+    intended_map: Dict[str, Tuple[int, int]] = {}
     out_root = out_subject_dir / "func" / "unprocessed" / func_dirname
 
     for (ses_lbl, rkey), entries in sorted(grouped.items(), key=lambda x: (ses_map[x[0][0]], run_map[x[0]])):
@@ -231,6 +279,8 @@ def import_func(
                 )
 
         for echo, src, _, v in vols_by_echo:
+            for key in bids_intended_keys(src, bids_subject_dir):
+                intended_map[key] = (s, r)
             dst = run_dir / f"{func_prefix}_S{s}_R{r}_E{echo}.nii.gz"
             if target_vols is not None and v > target_vols:
                 truncate_nifti(src, dst, target_vols, overwrite)
@@ -244,7 +294,7 @@ def import_func(
             else:
                 warnings.append(f"Missing JSON sidecar for bold file: {src}")
 
-    return copied_nii, copied_json
+    return copied_nii, copied_json, ses_map, run_map, intended_map
 
 
 def infer_run_from_intended_for(intended_for: List[str]) -> Optional[str]:
@@ -269,6 +319,21 @@ def fmap_intended_for_task(json_path: Path, task: str) -> bool:
         return True
     task_re = re.compile(rf"(^|[_/])task-{re.escape(task)}([_/]|$)")
     return any(task_re.search(str(item)) for item in intended)
+
+
+def intended_for_list(json_path: Path) -> List[str]:
+    if not json_path.exists():
+        return []
+    try:
+        meta = json.loads(json_path.read_text())
+    except Exception:
+        return []
+    intended = meta.get("IntendedFor", [])
+    if isinstance(intended, str):
+        intended = [intended]
+    if not isinstance(intended, list):
+        return []
+    return [str(item).replace("\\", "/") for item in intended]
 
 
 def parse_nifti_volumes(path: Path) -> int:
@@ -315,18 +380,15 @@ def import_fmaps(
     overwrite: bool,
     task: str,
     func_dirname: str,
+    fmap_mode: str,
+    func_ses_map: Dict[str, int],
+    func_run_map: Dict[Tuple[str, str], int],
+    intended_map: Dict[str, Tuple[int, int]],
     warnings: List[str],
-) -> Tuple[int, int]:
-    # Build minimal session/run mapping from destination func folders if they exist.
-    out_func = out_subject_dir / "func" / "unprocessed"
-    ses_dirs = sorted([p for p in out_func.rglob("session_*") if p.is_dir()])
-    ses_map_dest: Dict[str, int] = {}
-    if ses_dirs:
-        # Destination sessions are already numbered; map BIDS ses labels via order fallback.
-        pass
-
+) -> Tuple[int, int, int]:
     ap_count = 0
     pa_count = 0
+    phasediff_count = 0
     out_fm = out_subject_dir / "func" / "unprocessed" / func_dirname / "field_maps"
     out_fm.mkdir(parents=True, exist_ok=True)
 
@@ -335,73 +397,138 @@ def import_fmaps(
     ses_labels = set()
     run_labels_by_ses: Dict[str, set] = defaultdict(set)
 
+    if fmap_mode in {"auto", "topup"}:
+        for f in fmap_files:
+            entities, suffix = parse_entities(f)
+            if suffix != "epi":
+                continue
+            js = sidecar_json_for_nii(f)
+            if not fmap_intended_for_task(js, task):
+                warnings.append(f"Skipping fmap not intended for task-{task}: {f}")
+                continue
+            dir_label = entities.get("dir", "").lower()
+            if dir_label.startswith("ap"):
+                pol = "AP"
+            elif dir_label.startswith("pa"):
+                pol = "PA"
+            else:
+                warnings.append(f"Skipping fmap epi without dir-AP/dir-PA entity: {f}")
+                continue
+
+            ses_lbl = entities.get("ses", "1")
+            run_lbl = entities.get("run")
+            if run_lbl is None:
+                if js.exists():
+                    try:
+                        meta = json.loads(js.read_text())
+                        intended = meta.get("IntendedFor", [])
+                        if isinstance(intended, list):
+                            inferred = infer_run_from_intended_for(intended)
+                            run_lbl = inferred
+                    except Exception:
+                        pass
+            if run_lbl is None:
+                run_lbl = "1"
+                warnings.append(f"No run label for fmap {f}; defaulting to run 1.")
+
+            ses_labels.add(ses_lbl)
+            run_labels_by_ses[ses_lbl].add(run_lbl)
+            temp_groups[(ses_lbl, run_lbl, pol)] = f
+
+    if temp_groups:
+        ses_sorted = sort_mixed_labels(ses_labels)
+        ses_map = {s: func_ses_map.get(s, i) for i, s in enumerate(ses_sorted, start=1)}
+        run_map: Dict[Tuple[str, str], int] = {}
+        for ses in ses_sorted:
+            for i, run_lbl in enumerate(sort_mixed_labels(run_labels_by_ses[ses]), start=1):
+                run_map[(ses, run_lbl)] = func_run_map.get((ses, f"run-{run_lbl}"), i)
+
+        for (ses_lbl, run_lbl, pol), src in sorted(
+            temp_groups.items(),
+            key=lambda x: (ses_map[x[0][0]], run_map[(x[0][0], x[0][1])], x[0][2]),
+        ):
+            s = ses_map[ses_lbl]
+            r = run_map[(ses_lbl, run_lbl)]
+            dst_nii = out_fm / f"{pol}_S{s}_R{r}.nii.gz"
+            symlink_or_copy(src, dst_nii, mode, overwrite)
+            js = sidecar_json_for_nii(src)
+            if js.exists():
+                symlink_or_copy(js, out_fm / f"{pol}_S{s}_R{r}.json", mode, overwrite)
+            else:
+                warnings.append(f"Missing JSON sidecar for fmap file: {src}")
+            if pol == "AP":
+                ap_count += 1
+            else:
+                pa_count += 1
+    elif fmap_mode == "topup":
+        warnings.append("No BIDS fmap epi files imported (dir-AP/dir-PA not found).")
+
+    if fmap_mode not in {"auto", "phasediff"}:
+        return ap_count, pa_count, phasediff_count
+
+    by_session: Dict[str, Dict[str, Path]] = defaultdict(dict)
     for f in fmap_files:
         entities, suffix = parse_entities(f)
-        if suffix != "epi":
+        if suffix not in {"phasediff", "magnitude1", "magnitude2"}:
             continue
         js = sidecar_json_for_nii(f)
         if not fmap_intended_for_task(js, task):
             warnings.append(f"Skipping fmap not intended for task-{task}: {f}")
             continue
-        dir_label = entities.get("dir", "").lower()
-        if dir_label.startswith("ap"):
-            pol = "AP"
-        elif dir_label.startswith("pa"):
-            pol = "PA"
-        else:
-            warnings.append(f"Skipping fmap epi without dir-AP/dir-PA entity: {f}")
+        ses_lbl = entities.get("ses", "1")
+        by_session[ses_lbl][suffix] = f
+
+    for ses_lbl in sort_mixed_labels(by_session.keys()):
+        group = by_session[ses_lbl]
+        phase = group.get("phasediff")
+        mag1 = group.get("magnitude1")
+        mag2 = group.get("magnitude2")
+        if phase is None:
+            continue
+        if mag1 is None and mag2 is None:
+            warnings.append(f"Skipping phasediff fmap with no magnitude image for ses={ses_lbl}: {phase}")
             continue
 
-        ses_lbl = entities.get("ses", "1")
-        run_lbl = entities.get("run")
-        if run_lbl is None:
+        js = sidecar_json_for_nii(phase)
+        intended = intended_for_list(js)
+        dest_runs: List[Tuple[int, int]] = []
+        for item in intended:
+            if item in intended_map:
+                dest_runs.append(intended_map[item])
+                continue
+            base = item.split("/")[-1]
+            if base in intended_map:
+                dest_runs.append(intended_map[base])
+        if not dest_runs:
+            s = func_ses_map.get(ses_lbl)
+            if s is None:
+                warnings.append(f"Skipping phasediff fmap for ses={ses_lbl}; no matching functional session was imported.")
+                continue
+            dest_runs = [(s, 1)]
+            warnings.append(f"No IntendedFor match for phasediff fmap {phase}; assigning to session {s} run 1.")
+
+        for s, r in sorted(set(dest_runs)):
+            symlink_or_copy(phase, out_fm / f"PhaseDiff_S{s}_R{r}.nii.gz", mode, overwrite)
             if js.exists():
-                try:
-                    meta = json.loads(js.read_text())
-                    intended = meta.get("IntendedFor", [])
-                    if isinstance(intended, list):
-                        inferred = infer_run_from_intended_for(intended)
-                        run_lbl = inferred
-                except Exception:
-                    pass
-        if run_lbl is None:
-            run_lbl = "1"
-            warnings.append(f"No run label for fmap {f}; defaulting to run 1.")
+                symlink_or_copy(js, out_fm / f"PhaseDiff_S{s}_R{r}.json", mode, overwrite)
+            else:
+                warnings.append(f"Missing JSON sidecar for phasediff fmap: {phase}")
+            if mag1 is not None:
+                symlink_or_copy(mag1, out_fm / f"Magnitude1_S{s}_R{r}.nii.gz", mode, overwrite)
+                mag1_js = sidecar_json_for_nii(mag1)
+                if mag1_js.exists():
+                    symlink_or_copy(mag1_js, out_fm / f"Magnitude1_S{s}_R{r}.json", mode, overwrite)
+            if mag2 is not None:
+                symlink_or_copy(mag2, out_fm / f"Magnitude2_S{s}_R{r}.nii.gz", mode, overwrite)
+                mag2_js = sidecar_json_for_nii(mag2)
+                if mag2_js.exists():
+                    symlink_or_copy(mag2_js, out_fm / f"Magnitude2_S{s}_R{r}.json", mode, overwrite)
+            phasediff_count += 1
 
-        ses_labels.add(ses_lbl)
-        run_labels_by_ses[ses_lbl].add(run_lbl)
-        temp_groups[(ses_lbl, run_lbl, pol)] = f
+    if phasediff_count == 0 and fmap_mode == "phasediff":
+        warnings.append("No BIDS phasediff fieldmaps imported.")
 
-    if not temp_groups:
-        warnings.append("No BIDS fmap epi files imported (dir-AP/dir-PA not found).")
-        return ap_count, pa_count
-
-    ses_sorted = sort_mixed_labels(ses_labels)
-    ses_map = {s: i for i, s in enumerate(ses_sorted, start=1)}
-    run_map: Dict[Tuple[str, str], int] = {}
-    for ses in ses_sorted:
-        for i, run_lbl in enumerate(sort_mixed_labels(run_labels_by_ses[ses]), start=1):
-            run_map[(ses, run_lbl)] = i
-
-    for (ses_lbl, run_lbl, pol), src in sorted(
-        temp_groups.items(),
-        key=lambda x: (ses_map[x[0][0]], run_map[(x[0][0], x[0][1])], x[0][2]),
-    ):
-        s = ses_map[ses_lbl]
-        r = run_map[(ses_lbl, run_lbl)]
-        dst_nii = out_fm / f"{pol}_S{s}_R{r}.nii.gz"
-        symlink_or_copy(src, dst_nii, mode, overwrite)
-        js = sidecar_json_for_nii(src)
-        if js.exists():
-            symlink_or_copy(js, out_fm / f"{pol}_S{s}_R{r}.json", mode, overwrite)
-        else:
-            warnings.append(f"Missing JSON sidecar for fmap file: {src}")
-        if pol == "AP":
-            ap_count += 1
-        else:
-            pa_count += 1
-
-    return ap_count, pa_count
+    return ap_count, pa_count, phasediff_count
 
 
 def main() -> int:
@@ -415,6 +542,7 @@ def main() -> int:
     ap.add_argument("--mode", choices=["symlink", "copy"], default="symlink", help="Import mode (default: symlink)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing destination files")
     ap.add_argument("--echo-dim4-policy", choices=["abort", "truncate_to_min"], default="abort", help="Per-run echo dim4 mismatch handling")
+    ap.add_argument("--fieldmap-mode", choices=["auto", "topup", "phasediff", "none"], default="auto", help="BIDS fmap import mode (default: auto)")
     args = ap.parse_args()
 
     bids_root = Path(args.bids_root).resolve()
@@ -433,8 +561,9 @@ def main() -> int:
 
     try:
         t1_n, t2_n = import_anat(anat_files, out_subject_dir, args.mode, args.overwrite, warnings)
-        func_n, func_json_n = import_func(
+        func_n, func_json_n, func_ses_map, func_run_map, intended_map = import_func(
             func_files,
+            subdir,
             out_subject_dir,
             args.task,
             args.func_dirname,
@@ -444,15 +573,22 @@ def main() -> int:
             args.echo_dim4_policy,
             warnings,
         )
-        ap_n, pa_n = import_fmaps(
+        if args.fieldmap_mode == "none":
+            ap_n = pa_n = phasediff_n = 0
+        else:
+            ap_n, pa_n, phasediff_n = import_fmaps(
             fmap_files,
             out_subject_dir,
             args.mode,
             args.overwrite,
             args.task,
             args.func_dirname,
+            args.fieldmap_mode,
+            func_ses_map,
+            func_run_map,
+            intended_map,
             warnings,
-        )
+            )
     except ImportErrorAbort as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -467,6 +603,7 @@ def main() -> int:
     print(f"  Func echoes (json): {func_json_n}")
     print(f"  Fieldmaps AP: {ap_n}")
     print(f"  Fieldmaps PA: {pa_n}")
+    print(f"  Fieldmaps phasediff: {phasediff_n}")
 
     if warnings:
         print("\nWarnings:")

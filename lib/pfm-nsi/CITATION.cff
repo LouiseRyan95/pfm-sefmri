@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: "PFM-NSI"
+message: "If you use this software, please cite the associated paper and archived software release."
+authors:
+  - family-names: "Lynch"
+    given-names: "Charles J."
+    affiliation: "Weill Cornell Medicine"
+license: MIT
+version: 0.1.0
+date-released: 2026-05-11
+repository-code: "https://github.com/cjl2007/pfm-nsi"
+url: "https://github.com/cjl2007/pfm-nsi"
+preferred-citation:
+  type: article
+  title: "Objective Quality Assessment for Precision Functional MRI Data"
+  authors:
+    - family-names: "Lynch"
+      given-names: "Charles J."
+      affiliation: "Weill Cornell Medicine"
+  doi: "10.64898/2026.02.10.704857"

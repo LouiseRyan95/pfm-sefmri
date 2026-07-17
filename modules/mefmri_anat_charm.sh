@@ -351,15 +351,11 @@ if [ ! -f "${T1W_ACPC_DCRESTORE}" ]; then
   exit 1
 fi
 
-if [ ! -f "${T2W_ACPC_DCRESTORE}" ]; then
-  echo "ERROR: Missing ${T2W_ACPC_DCRESTORE}" >&2
-  exit 1
-fi
 
 # Apply
 fslmaths "${T1W_ACPC}" -mas "${BRAIN_MASK_OUT}" "${T1W_ACPC_BRAIN}"
 fslmaths "${T1W_ACPC_DCRESTORE}" -mas "${BRAIN_MASK_OUT}" "${T1W_ACPC_DCRESTORE_BRAIN}"
-fslmaths "${T2W_ACPC_DCRESTORE}" -mas "${BRAIN_MASK_OUT}" "${T2W_ACPC_DCRESTORE_BRAIN}"
+
 
 # ---- create binarized cortical ribbon mask (values 3 and 42) ----
 #echo "Creating CorticalRibbon.nii.gz from ribbon.nii.gz (labels 3 and 42)"

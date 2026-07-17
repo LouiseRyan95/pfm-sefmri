@@ -10,17 +10,17 @@ HCPPIPEDIR_DEFAULT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 export HCPPIPEDIR="${HCPPIPEDIR_DEFAULT}"
 
 ## Set up other environment variables
-export MSM="${MSM:-/usr/local/msm_ubuntu_v3}"
-export MSMBINDIR="${MSMBINDIR:-/usr/local/msm_ubuntu_v3}"
+export MSM="${MSM:-/data/home/ygc/MSM_HOCR_linux}"
+export MSMBINDIR="${MSMBINDIR:-/data/home/ygc/MSM_HOCR_linux/bin}"
 # NOTE: MSMBINDIR should point to the directory containing the 'msm' binary (or to the msm binary itself).
-export MATLAB_COMPILER_RUNTIME=/export/matlab/MCR/R2017b/v93
-export FSL_FIXDIR=/usr/local/fix
+export MATLAB_COMPILER_RUNTIME=/data/home/ygc/matlab/MCR/R2017b/v93
+export FSL_FIXDIR=/data/home/ygc/fsl/bin/fix
 # if a suitable version of wb_command is on your $PATH, CARET7DIR can be blank
-export CARET7DIR=
+export CARET7DIR=/data/home/ygc/workbench/bin_linux64
 
 ## Set up FSL (if not already done so in the running environment)
 ## Uncomment the following 2 lines (remove the leading #) and correct the FSLDIR setting for your setup
-#export FSLDIR=/usr/local/fsl
+#export FSLDIR=/data/home/ygc/fsl
 #source "$FSLDIR/etc/fslconf/fsl.sh"
 
 ## Let FreeSurfer explicitly know what version of FSL to use (this shouldn't need changing)
@@ -28,7 +28,7 @@ export FSL_DIR="${FSLDIR}"
 
 ## Set up FreeSurfer (if not already done so in the running environment)
 ## Uncomment the following 2 lines (remove the leading #) and correct the FREESURFER_HOME setting for your setup
-#export FREESURFER_HOME=/usr/local/bin/freesurfer
+#export FREESURFER_HOME=/data/home/ygc/bin/freesurfer
 #source ${FREESURFER_HOME}/SetUpFreeSurfer.sh > /dev/null 2>&1
 
 # Trick to allow certain setups to source an unmodified SetUp... and get some functionality

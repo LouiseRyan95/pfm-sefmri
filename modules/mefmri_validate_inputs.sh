@@ -12,6 +12,7 @@ FuncFilePrefix="${3:-${FUNC_FILE_PREFIX:-Rest}}"
 StartSession="${4:-${START_SESSION:-1}}"
 VALIDATE_ECHO_DIM4_POLICY="${VALIDATE_ECHO_DIM4_POLICY:-error}"
 FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
+DISTORTION_CORRECTION_MODE="${DISTORTION_CORRECTION_MODE:-topup}"
 
 [[ -d "$SubjectDir" ]] || { echo "ERROR: missing subject directory: $SubjectDir" >&2; exit 2; }
 [[ "$StartSession" =~ ^[0-9]+$ ]] || { echo "ERROR: StartSession must be integer, got: $StartSession" >&2; exit 2; }
@@ -23,6 +24,14 @@ FUNC_NOFIELDMAP_MODE="${FUNC_NOFIELDMAP_MODE:-0}"
   echo "ERROR: FUNC_NOFIELDMAP_MODE must be 0|1, got: $FUNC_NOFIELDMAP_MODE" >&2
   exit 2
 }
+case "$DISTORTION_CORRECTION_MODE" in
+  topup|phasediff|medic) ;;
+  none) FUNC_NOFIELDMAP_MODE=1 ;;
+  *)
+    echo "ERROR: DISTORTION_CORRECTION_MODE must be topup|phasediff|medic|none, got: $DISTORTION_CORRECTION_MODE" >&2
+    exit 2
+    ;;
+esac
 
 Subject="$(basename "$SubjectDir")"
 
@@ -44,13 +53,13 @@ check_anat() {
   [[ -d "$ANAT_UNPROC" ]] || { err "Missing anat raw directory: $ANAT_UNPROC"; return; }
   [[ -d "$t1_dir" ]] || { err "Missing T1w directory: $t1_dir"; return; }
 
-  t1_count=$(find -L "$t1_dir" -maxdepth 1 -type f -name 'T1w*.nii.gz' | wc -l | tr -d ' ')
+  t1_count=$(find "$t1_dir" -maxdepth 1 -type f -name 'T1w*.nii.gz' | wc -l | tr -d ' ')
   if [[ "$t1_count" -lt 1 ]]; then
     err "No T1w*.nii.gz files found in $t1_dir"
   fi
 
   if [[ -d "$t2_dir" ]]; then
-    t2_count=$(find -L "$t2_dir" -maxdepth 1 -type f -name 'T2w*.nii.gz' | wc -l | tr -d ' ')
+    t2_count=$(find "$t2_dir" -maxdepth 1 -type f -name 'T2w*.nii.gz' | wc -l | tr -d ' ')
     if [[ "$t2_count" -lt 1 ]]; then
       warn "T2w directory exists but no T2w*.nii.gz found: $t2_dir (pipeline can run in legacy mode)"
     fi
@@ -63,7 +72,7 @@ check_func() {
   local session_dirs=() session run_dirs run run_num expected_prefix
   [[ -d "$FUNC_UNPROC" ]] || { err "Missing functional raw directory: $FUNC_UNPROC"; return; }
 
-  mapfile -t session_dirs < <(find -L "$FUNC_UNPROC" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
+  mapfile -t session_dirs < <(find "$FUNC_UNPROC" -mindepth 1 -maxdepth 1 -type d -name 'session_*' | sort -V)
   [[ "${#session_dirs[@]}" -gt 0 ]] || { err "No session_* folders found in $FUNC_UNPROC"; return; }
 
   for session in "${session_dirs[@]}"; do
@@ -73,7 +82,7 @@ check_func() {
       continue
     fi
 
-    mapfile -t run_dirs < <(find -L "$session" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
+    mapfile -t run_dirs < <(find "$session" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort -V)
     [[ "${#run_dirs[@]}" -gt 0 ]] || { err "No run_* folders found in $session"; continue; }
 
     for run in "${run_dirs[@]}"; do
@@ -92,13 +101,13 @@ validate_run_payload() {
   local nf jf echo_tag
   local -a echo_sizes=() echo_names=() echo_vols=()
 
-  mapfile -t nii_files < <(find -L "$run_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S*_R*_E*.nii.gz" | sort -V)
+  mapfile -t nii_files < <(find "$run_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S*_R*_E*.nii.gz" | sort -V)
   if [[ "${#nii_files[@]}" -eq 0 ]]; then
     err "No echo NIfTI files found in $run_dir (expected ${expected_prefix}*.nii.gz)"
     return
   fi
 
-  mapfile -t json_files < <(find -L "$run_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S*_R*_E*.json" | sort -V)
+  mapfile -t json_files < <(find "$run_dir" -maxdepth 1 -type f -name "${FuncFilePrefix}_S*_R*_E*.json" | sort -V)
   if [[ "${#json_files[@]}" -eq 0 ]]; then
     err "No echo JSON sidecars found in $run_dir (expected ${expected_prefix}*.json)"
   fi
@@ -116,7 +125,7 @@ validate_run_payload() {
     if [[ ! "$echo_tag" =~ ^[0-9]+$ ]]; then
       err "Could not parse echo index from filename: $nf"
     fi
-    echo_sizes+=("$(stat -Lc%s "$nf")")
+    echo_sizes+=("$(stat -c%s "$nf")")
     echo_names+=("$(basename "$nf")")
     if command -v fslnvols >/dev/null 2>&1; then
       echo_vols+=("$(fslnvols "$nf")")
@@ -243,8 +252,8 @@ PY
 }
 
 check_fieldmaps() {
-  local -a ap_files=() pa_files=()
-  local ap pa expected_json
+  local -a ap_files=() pa_files=() phase_files=()
+  local ap pa phase tag mag1 mag2 expected_json
 
   if [[ "$FUNC_NOFIELDMAP_MODE" == "1" ]]; then
     if [[ -d "$FM_UNPROC" ]]; then
@@ -257,8 +266,31 @@ check_fieldmaps() {
 
   [[ -d "$FM_UNPROC" ]] || { err "Missing fieldmap raw directory: $FM_UNPROC"; return; }
 
-  mapfile -t ap_files < <(find -L "$FM_UNPROC" -maxdepth 1 -type f -name 'AP_S*_R*.nii.gz' | sort -V)
-  mapfile -t pa_files < <(find -L "$FM_UNPROC" -maxdepth 1 -type f -name 'PA_S*_R*.nii.gz' | sort -V)
+  if [[ "$DISTORTION_CORRECTION_MODE" == "medic" ]]; then
+    warn "DISTORTION_CORRECTION_MODE=medic: skipping classic fieldmap directory checks."
+    return
+  fi
+
+  if [[ "$DISTORTION_CORRECTION_MODE" == "phasediff" ]]; then
+    mapfile -t phase_files < <(find "$FM_UNPROC" -maxdepth 1 -type f -name 'PhaseDiff_S*_R*.nii.gz' | sort -V)
+    [[ "${#phase_files[@]}" -gt 0 ]] || { err "No PhaseDiff fieldmap NIfTI files found in $FM_UNPROC"; return; }
+    for phase in "${phase_files[@]}"; do
+      tag="$(basename "$phase")"
+      tag="${tag#PhaseDiff_}"
+      tag="${tag%.nii.gz}"
+      expected_json="${phase%.nii.gz}.json"
+      [[ -f "$expected_json" ]] || err "Missing PhaseDiff fieldmap JSON: $expected_json"
+      mag1="$FM_UNPROC/Magnitude1_${tag}.nii.gz"
+      mag2="$FM_UNPROC/Magnitude2_${tag}.nii.gz"
+      [[ -f "$mag1" || -f "$mag2" ]] || err "Missing Magnitude1/Magnitude2 fieldmap image for PhaseDiff: $phase"
+      [[ ! -f "$mag1" || -f "${mag1%.nii.gz}.json" ]] || err "Missing Magnitude1 fieldmap JSON: ${mag1%.nii.gz}.json"
+      [[ ! -f "$mag2" || -f "${mag2%.nii.gz}.json" ]] || err "Missing Magnitude2 fieldmap JSON: ${mag2%.nii.gz}.json"
+    done
+    return
+  fi
+
+  mapfile -t ap_files < <(find "$FM_UNPROC" -maxdepth 1 -type f -name 'AP_S*_R*.nii.gz' | sort -V)
+  mapfile -t pa_files < <(find "$FM_UNPROC" -maxdepth 1 -type f -name 'PA_S*_R*.nii.gz' | sort -V)
 
   [[ "${#ap_files[@]}" -gt 0 ]] || err "No AP fieldmap NIfTI files found in $FM_UNPROC"
   [[ "${#pa_files[@]}" -gt 0 ]] || err "No PA fieldmap NIfTI files found in $FM_UNPROC"
@@ -279,6 +311,7 @@ echo "[validate] SubjectDir: $SubjectDir"
 echo "[validate] Functional naming: func/$FuncDirName, prefix ${FuncFilePrefix}_*"
 echo "[validate] StartSession: $StartSession"
 echo "[validate] Echo dim4 policy: $VALIDATE_ECHO_DIM4_POLICY"
+echo "[validate] DISTORTION_CORRECTION_MODE: $DISTORTION_CORRECTION_MODE"
 echo "[validate] FUNC_NOFIELDMAP_MODE: $FUNC_NOFIELDMAP_MODE"
 
 check_anat

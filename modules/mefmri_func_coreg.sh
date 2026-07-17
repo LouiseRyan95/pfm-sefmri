@@ -287,7 +287,7 @@ else
 	echo "[INFO] Found existing white.deformed surfaces; skipping."
 fi
 
-AvgPEDIR=$(find -L "$Subdir"/func/"$FuncDirName" -type f -name PE.txt | sort | head -n 1 | xargs cat 2>/dev/null)
+AvgPEDIR=$(find "$Subdir"/func/"$FuncDirName" -type f -name PE.txt | sort | head -n 1 | xargs cat 2>/dev/null)
 if [ -z "$AvgPEDIR" ]; then
 	AvgPEDIR=${EPIREG_PEDIR:--y}
 fi

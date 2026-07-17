@@ -30,7 +30,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MEDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 EnvironmentScript="$MEDIR/HCPpipelines-master/Examples/Scripts/SetUpHCPPipeline.sh"
-CHARM_BIN="/home/charleslynch/SimNIBS-4.5/bin/charm"
+CHARM_BIN="/data/home/ygc/SimNIBS-4.5/simnibs_env/bin/charm"
 
 # Repository resources used by downstream modules. Leave these repository-
 # relative defaults unless your resource bundle lives somewhere else.
@@ -43,7 +43,7 @@ PIPELINE_PYTHON="python3"
 # =============================================================================
 # Resume / routing. Leave START_FROM_MODULE at validate for a fresh run.
 START_SESSION=1
-START_FROM_MODULE="validate"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|nsi|pfm|pfm_update
+START_FROM_MODULE="validate"   # validate|anat_hcp|anat_charm|fieldmaps|coreg|headmotion|denoise|mgtr|vol2surf|concat|fc_movie|nsi|pfm|pfm_update
 STOP_AFTER_MODULE=""           # "" to run full chain
 
 # Functional naming and reference space
@@ -53,7 +53,7 @@ FUNC_XFMS_DIRNAME=""             # empty => follow FUNC_DIRNAME; set explicitly 
 DOF=6
 AtlasTemplate="$MEDIR/res0urces/MNI152_T1_2mm.nii.gz"
 AtlasSpace="T1w"                 # T1w|MNINonlinear
-APPLY_N4_BIAS=0                  # 0|1 ; usually leave off if prescan normalize was enabled
+APPLY_N4_BIAS=1                  # 0|1 ; usually leave off if prescan normalize was enabled
 
 # Global pipeline behavior. PROCESSING_MODE=auto chooses single_echo when fewer
 # than three echoes are present, otherwise multi_echo.
@@ -66,16 +66,17 @@ SINGLE_ECHO_DENOISE_METHOD="acompcor" # aroma|acompcor
 SINGLE_ECHO_ECHO_INDEX=1        # fallback/source echo used for single-echo denoising
 AROMA_NSI_THRESHOLD=0.05        # fixed NSI kill threshold for ICA-AROMA component screening
 CONCAT_ENABLE=1
-NSI_ENABLE=1                     # optional downstream metric; set 0 to skip when only preprocessing/QC is needed
-PFM_ENABLE=1                     # optional downstream mapping; set 0 to skip time-consuming PFM outputs
+NSI_ENABLE=1
+PFM_ENABLE=1
+CRAWLING_SEED_FC_ENABLE=1
 
 # Threading defaults used by modules that support parallelism.
-THREADS_DEFAULT=8
+THREADS_DEFAULT=128
 THREADS_ANAT_HCP="$THREADS_DEFAULT"
 THREADS_FIELDMAPS="$THREADS_DEFAULT"
 THREADS_COREG="$THREADS_DEFAULT"
 THREADS_HEADMOTION="$THREADS_DEFAULT"
-THREADS_MEICA=2
+THREADS_MEICA=128
 
 # =============================================================================
 # 3) Module-Specific Knobs
@@ -101,10 +102,11 @@ CHARM_WRITE_CORTICAL_RIBBON=1           # 1 writes anat/T1w/CorticalRibbon.nii.g
 # -----------------------------------------------------------------------------
 # 3b) Functional Distortion Correction / Coreg / Headmotion
 # -----------------------------------------------------------------------------
-DISTORTION_CORRECTION_MODE="topup" # topup|direct_b0|medic|none ; MEDIC/warpkit support is experimental
+DISTORTION_CORRECTION_MODE="phasediff" # topup|direct_b0|medic|none ; MEDIC/warpkit support is experimental
 FM_PE_MODE="infer"               # infer|config
 FM_AP_PE_DIR=""                  # e.g. j-
 FM_PA_PE_DIR=""                  # e.g. j
+PHASEDIFF_GDCOEFFS="NONE"
 EPIREG_PEDIR=""                  # empty => infer from PE.txt
 SCAN_SPECIFIC_FM=1
 FM_DIRECT_B0_DELTA_TE_MS=2.65    # fsl_prepare_fieldmap delta TE for direct B0/gradient-echo maps
@@ -175,7 +177,7 @@ AROMA_ACTIVATE_MODE="conda_activate" # conda_activate|conda_run|direct
 AROMA_PARALLEL_JOBS=4
 AROMA_OUT_SUBDIR="Aroma"
 AROMA_OVERWRITE=1                # 0|1
-AROMA_PLOT_REPORTS=0             # 0|1
+AROMA_PLOT_REPORTS=1             # 0|1
 AROMA_FEATURES_OUTPUT=1          # 0|1
 AROMA_CLEAN_TYPE="nonaggr"       # nonaggr|aggr
 
@@ -188,35 +190,6 @@ CONCAT_OUT_SUBDIR="ConcatenatedCiftis"
 CONCAT_CENSOR_BY_FD=1
 CONCAT_FD_THRESHOLD=0.3
 
-# Optional concat-stage QC movie. This runs immediately after concat when
-# CRAWLING_SEED_FC_ENABLE=1; it is not a START/STOP routing module.
-# It is resource-heavy: it creates a dense correlation CIFTI that can be tens of
-# GB, then renders frames with Workbench/wb_surfer2. Expect tens of minutes to
-# 1+ hour per subject; set CRAWLING_SEED_FC_ENABLE=0 to skip it.
-CRAWLING_SEED_FC_ENABLE=0
-CRAWLING_SEED_FC_INPUT_CIFTI=""          # empty => final concatenated CIFTI
-CRAWLING_SEED_FC_INPUT_TAG=""            # empty => CONCAT_INPUT_TAG
-CRAWLING_SEED_FC_OUTDIR=""               # empty => func/<FUNC_DIRNAME>/qa/CrawlingSeedFC
-CRAWLING_SEED_FC_WB_SURFER2=""           # direct path to wb_surfer2; overrides conda env
-CRAWLING_SEED_FC_WB_SURFER2_CONDA_ENV="wbsurfer_env"
-CRAWLING_SEED_FC_SCENE_TEMPLATE="$MEDIR/res0urces/CrawlingSeedFC/FlatMaps+Inflated.scene"
-CRAWLING_SEED_FC_VERTICES="$MEDIR/res0urces/CrawlingSeedFC/VerticesToSample.txt"
-CRAWLING_SEED_FC_TEMPLATE_SUBJECT="sub-TEMPLATE"
-CRAWLING_SEED_FC_SURFACE_RESOURCE_DIR="" # empty => anat/T1w or anat/MNINonLinear fsaverage_LR32k from AtlasSpace
-CRAWLING_SEED_FC_SURFACE_SUBJECT_PREFIX="" # empty => infer from subject surface filenames
-CRAWLING_SEED_FC_FLAT_SURFACE_RESOURCE_DIR="" # empty => anat/MNINonLinear/fsaverage_LR32k for T1w flatmaps
-CRAWLING_SEED_FC_FLAT_SURFACE_SUBJECT_PREFIX="" # empty => subject ID
-CRAWLING_SEED_FC_WIDTH=1280
-CRAWLING_SEED_FC_HEIGHT=720
-CRAWLING_SEED_FC_FRAMERATE=10
-# Each render worker may load the dense dconn; keep this low unless RAM is ample.
-CRAWLING_SEED_FC_NUM_CPUS=1
-CRAWLING_SEED_FC_TARGET_SIZE_MB=10
-CRAWLING_SEED_FC_FORCE=0
-CRAWLING_SEED_FC_FORCE_DCONN=0
-CRAWLING_SEED_FC_SKIP_MOVIE=0
-CRAWLING_SEED_FC_KEEP_DCONN=0
-
 # -----------------------------------------------------------------------------
 # 3g) NSI
 # -----------------------------------------------------------------------------
@@ -226,7 +199,7 @@ NSI_INPUT_TAG=""                 # empty => derive from CONCAT_INPUT_TAG
 NSI_CONCAT_OUT_SUBDIR="$CONCAT_OUT_SUBDIR"
 NSI_FD_THRESHOLD="$CONCAT_FD_THRESHOLD"
 NSI_USABILITY_MODEL=1
-NSI_RELIABILITY_MODEL=0
+NSI_RELIABILITY_MODEL=1
 
 # -----------------------------------------------------------------------------
 # 3h) PFM
@@ -252,12 +225,37 @@ PFM_INFOMAP_UPDATE_OUTFILE="InfomapNetworkLabels_ManualAdjusted"
 
 # Optional homogeneity/spin-null diagnostics. A rotation-index CIFTI should use
 # 1-based source indices in cortex rows, with 0 for unmapped vertices.
-PFM_HOMOGENEITY_TEST_ENABLE=0
+PFM_HOMOGENEITY_TEST_ENABLE=1
 PFM_HOMOGENEITY_ROTATIONS_CIFTI="$MEDIR/res0urces/Rotated_inds.dtseries.nii"
 PFM_HOMOGENEITY_N_ROTATIONS=100
 PFM_HOMOGENEITY_MIN_COMMUNITY_SIZE=5
 PFM_HOMOGENEITY_MAX_MEMBERS_PER_COMMUNITY=1000
 PFM_HOMOGENEITY_ALPHA=0.05
+
+# -----------------------------------------------------------------------------
+# 3i) Crawling Seed FC Movie QC
+# -----------------------------------------------------------------------------
+CRAWLING_SEED_FC_INPUT_CIFTI=""          # empty => final concatenated CIFTI
+CRAWLING_SEED_FC_INPUT_TAG=""            # empty => CONCAT_INPUT_TAG
+CRAWLING_SEED_FC_OUTDIR=""               # empty => func/<FUNC_DIRNAME>/qa/CrawlingSeedFC
+CRAWLING_SEED_FC_WB_SURFER2="/data/home/ygc/.local/bin/wb_surfer2"           # direct path to wb_surfer2; overrides conda env
+CRAWLING_SEED_FC_WB_SURFER2_CONDA_ENV="wbsurfer_env"
+CRAWLING_SEED_FC_SCENE_TEMPLATE="$MEDIR/res0urces/CrawlingSeedFC/FlatMaps+Inflated.scene"
+CRAWLING_SEED_FC_VERTICES="$MEDIR/res0urces/CrawlingSeedFC/VerticesToSample.txt"
+CRAWLING_SEED_FC_TEMPLATE_SUBJECT="sub-ME01"
+CRAWLING_SEED_FC_SURFACE_RESOURCE_DIR="" # empty => anat/T1w or anat/MNINonLinear fsaverage_LR32k from AtlasSpace
+CRAWLING_SEED_FC_SURFACE_SUBJECT_PREFIX="" # empty => infer from subject surface filenames
+CRAWLING_SEED_FC_FLAT_SURFACE_RESOURCE_DIR="" # empty => anat/MNINonLinear/fsaverage_LR32k for T1w flatmaps
+CRAWLING_SEED_FC_FLAT_SURFACE_SUBJECT_PREFIX="" # empty => subject ID
+CRAWLING_SEED_FC_WIDTH=1280
+CRAWLING_SEED_FC_HEIGHT=720
+CRAWLING_SEED_FC_FRAMERATE=10
+CRAWLING_SEED_FC_NUM_CPUS="$THREADS_DEFAULT"
+CRAWLING_SEED_FC_TARGET_SIZE_MB=10
+CRAWLING_SEED_FC_FORCE=0
+CRAWLING_SEED_FC_FORCE_DCONN=0
+CRAWLING_SEED_FC_SKIP_MOVIE=0
+CRAWLING_SEED_FC_KEEP_DCONN=0
 
 # =============================================================================
 # 4) Advanced / Rarely Changed Knobs
